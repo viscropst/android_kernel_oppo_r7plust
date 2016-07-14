@@ -16,11 +16,10 @@ static int backward_compatible_throttle(struct thermal_zone_device *tz, int trip
 	long trip_temp;
 	struct thermal_instance *instance;
 
-	if (trip == THERMAL_TRIPS_NONE) {
+	if (trip == THERMAL_TRIPS_NONE)
 		trip_temp = tz->forced_passive;
-	} else {
+	else
 		tz->ops->get_trip_temp(tz, trip, &trip_temp);
-	}
 
 	/* mutex_lock(&tz->lock); */
 

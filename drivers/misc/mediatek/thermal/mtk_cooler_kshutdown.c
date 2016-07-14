@@ -11,21 +11,17 @@
 #include <linux/types.h>
 #include <linux/kobject.h>
 
-#include "mach/mtk_thermal_monitor.h"
-
-extern void machine_power_off(void);
+#include "mt-plat/mtk_thermal_monitor.h"
 
 #if 1
-#define mtk_cooler_kshutdown_dprintk(fmt, args...) \
-  do { pr_debug("thermal/cooler/kshutdown " fmt, ##args); } while (0)
+#define mtk_cooler_kshutdown_dprintk(fmt, args...) pr_debug("thermal/cooler/kshutdown " fmt, ##args)
 #else
 #define mtk_cooler_kshutdown_dprintk(fmt, args...)
 #endif
 
 #define MAX_NUM_INSTANCE_MTK_COOLER_KSHUTDOWN  3
 
-static struct thermal_cooling_device *cl_kshutdown_dev[MAX_NUM_INSTANCE_MTK_COOLER_KSHUTDOWN] =
-    { 0 };
+static struct thermal_cooling_device *cl_kshutdown_dev[MAX_NUM_INSTANCE_MTK_COOLER_KSHUTDOWN] = { 0 };
 static unsigned long cl_kshutdown_state[MAX_NUM_INSTANCE_MTK_COOLER_KSHUTDOWN] = { 0 };
 
 static int mtk_cl_kshutdown_get_max_state(struct thermal_cooling_device *cdev, unsigned long *state)
@@ -73,10 +69,12 @@ static struct thermal_cooling_device_ops mtk_cl_kshutdown_ops = {
 static int mtk_cooler_kshutdown_register_ltf(void)
 {
 	int i;
+
 	mtk_cooler_kshutdown_dprintk("register ltf\n");
 
 	for (i = MAX_NUM_INSTANCE_MTK_COOLER_KSHUTDOWN; i-- > 0;) {
 		char temp[20] = { 0 };
+
 		sprintf(temp, "mtk-cl-kshutdown%02d", i);
 		cl_kshutdown_dev[i] = mtk_thermal_cooling_device_register(temp,
 									  (void *)
@@ -95,6 +93,7 @@ static int mtk_cooler_kshutdown_register_ltf(void)
 static void mtk_cooler_kshutdown_unregister_ltf(void)
 {
 	int i;
+
 	mtk_cooler_kshutdown_dprintk("unregister ltf\n");
 
 	for (i = MAX_NUM_INSTANCE_MTK_COOLER_KSHUTDOWN; i-- > 0;) {

@@ -79,6 +79,7 @@ int DumpNativeInfo(void)
 			     flags & VM_MAYSHARE ? 's' : 'p', file->f_path.dentry->d_iname);
 		} else {
 			const char *name = arch_vma_name(vma);
+
 			mm = vma->vm_mm;
 			if (!name) {
 				if (mm) {
@@ -116,9 +117,8 @@ int DumpNativeInfo(void)
 			break;
 		}
 		vma = vma->vm_next;
-		if (vma == current_task->mm->mmap) {
+		if (vma == current_task->mm->mmap)
 			break;
-		}
 	}
 	if (userstack_end == 0) {
 		LOGE("Dump native stack failed:\n");

@@ -58,7 +58,7 @@
 #define DEFAULT_RP_PERCENT 5
 
 /* The default maximum size of reserved pool in bytes */
-#define DEFAULT_MAX_RP_SIZE (5*1024*1024)
+#define DEFAULT_MAX_RP_SIZE (512*1024)
 
 /* Default time granularity in nanoseconds */
 #define DEFAULT_TIME_GRAN 1000000000
@@ -182,8 +182,13 @@ static int create_default_filesystem(struct ubifs_info *c)
 	sup->time_gran     = cpu_to_le32(DEFAULT_TIME_GRAN);
 	if (c->mount_opts.override_compr)
 		sup->default_compr = cpu_to_le16(c->mount_opts.compr_type);
-	else
+	else {
+#if defined(CONFIG_UBIFS_FS_LZ4K)
+		sup->default_compr = cpu_to_le16(UBIFS_COMPR_LZ4K);
+#else
 		sup->default_compr = cpu_to_le16(UBIFS_COMPR_LZO);
+#endif
+	}
 
 	generate_random_uuid(sup->uuid);
 
@@ -192,6 +197,7 @@ static int create_default_filesystem(struct ubifs_info *c)
 	if (tmp64 > DEFAULT_MAX_RP_SIZE)
 		tmp64 = DEFAULT_MAX_RP_SIZE;
 	sup->rp_size = cpu_to_le64(tmp64);
+	sup->rp_uid = 9996; /*VID_CCCI*/
 	sup->ro_compat_version = cpu_to_le32(UBIFS_RO_COMPAT_VERSION);
 
 	err = ubifs_write_node(c, sup, UBIFS_SB_NODE_SZ, 0, 0);
@@ -332,6 +338,8 @@ static int create_default_filesystem(struct ubifs_info *c)
 	cs->ch.node_type = UBIFS_CS_NODE;
 	err = ubifs_write_node(c, cs, UBIFS_CS_NODE_SZ, UBIFS_LOG_LNUM, 0);
 	kfree(cs);
+	if (err)
+		return err;
 
 	ubifs_msg("default file-system created");
 	return 0;
@@ -447,7 +455,7 @@ static int validate_sb(struct ubifs_info *c, struct ubifs_sb_node *sup)
 		goto failed;
 	}
 
-	if (c->default_compr < 0 || c->default_compr >= UBIFS_COMPR_TYPES_CNT) {
+	if (c->default_compr >= UBIFS_COMPR_TYPES_CNT) {
 		err = 13;
 		goto failed;
 	}
@@ -678,11 +686,23 @@ static int fixup_leb(struct ubifs_info *c, int lnum, int len)
 	}
 
 	dbg_mnt("fixup LEB %d, data len %d", lnum, len);
+#ifdef CONFIG_UBIFS_SHARE_BUFFER
+	if (mutex_trylock(&ubifs_sbuf_mutex) == 0) {
+		atomic_long_inc(&ubifs_sbuf_lock_count);
+		ubifs_err("trylock fail count %ld\n", atomic_long_read(&ubifs_sbuf_lock_count));
+		mutex_lock(&ubifs_sbuf_mutex);
+		ubifs_err("locked count %ld\n", atomic_long_read(&ubifs_sbuf_lock_count));
+	}
+#endif
 	err = ubifs_leb_read(c, lnum, c->sbuf, 0, len, 1);
 	if (err)
 		return err;
 
-	return ubifs_leb_change(c, lnum, c->sbuf, len);
+	err = ubifs_leb_change(c, lnum, c->sbuf, len);
+#ifdef CONFIG_UBIFS_SHARE_BUFFER
+	mutex_unlock(&ubifs_sbuf_mutex);
+#endif
+	return err;
 }
 
 /**

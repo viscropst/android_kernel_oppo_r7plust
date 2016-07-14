@@ -181,18 +181,20 @@ void usb_stor_show_sense(const struct us_data *us,
 
 int usb_stor_dbg(const struct us_data *us, const char *fmt, ...)
 {
+	/* limit debug mechanism to avoid printk too much */
+	static DEFINE_RATELIMIT_STATE(ratelimit, 1 * HZ, 10);
 	va_list args;
-	int r = 0;
+	int r;
 
-	if(usb_storage_debug){
+	if (!(__ratelimit(&ratelimit)))
+		return 1;
 
-        va_start(args, fmt);
+	va_start(args, fmt);
 
-        r = dev_vprintk_emit(7, &us->pusb_dev->dev, fmt, args);
+	r = dev_vprintk_emit(7, &us->pusb_dev->dev, fmt, args);
 
-        va_end(args);
-    }
+	va_end(args);
 
-    return r;
+	return r;
 }
 EXPORT_SYMBOL_GPL(usb_stor_dbg);

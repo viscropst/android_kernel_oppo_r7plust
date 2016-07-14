@@ -178,27 +178,11 @@ static int ins_clr_old_idx_znode(struct ubifs_info *c,
  */
 void destroy_old_idx(struct ubifs_info *c)
 {
-	struct rb_node *this = c->old_idx.rb_node;
-	struct ubifs_old_idx *old_idx;
+	struct ubifs_old_idx *old_idx, *n;
 
-	while (this) {
-		if (this->rb_left) {
-			this = this->rb_left;
-			continue;
-		} else if (this->rb_right) {
-			this = this->rb_right;
-			continue;
-		}
-		old_idx = rb_entry(this, struct ubifs_old_idx, rb);
-		this = rb_parent(this);
-		if (this) {
-			if (this->rb_left == &old_idx->rb)
-				this->rb_left = NULL;
-			else
-				this->rb_right = NULL;
-		}
+	rbtree_postorder_for_each_entry_safe(old_idx, n, &c->old_idx, rb)
 		kfree(old_idx);
-	}
+
 	c->old_idx = RB_ROOT;
 }
 
@@ -458,15 +442,21 @@ static int try_read_node(const struct ubifs_info *c, void *buf, int type,
 	int err, node_len;
 	struct ubifs_ch *ch = buf;
 	uint32_t crc, node_crc;
-
+#if defined(FEATURE_UBIFS_PERF_INDEX)
+	unsigned long long time1 = sched_clock();
+#endif
 	dbg_io("LEB %d:%d, %s, length %d", lnum, offs, dbg_ntype(type), len);
 
 	err = ubifs_leb_read(c, lnum, buf, offs, len, 1);
 	if (err) {
 		ubifs_err("cannot read node type %d from LEB %d:%d, error %d",
 			  type, lnum, offs, err);
-		return err;
+		/*MTK: return err;*/
 	}
+#if defined(FEATURE_UBIFS_PERF_INDEX)
+	if (type == UBIFS_DATA_NODE)
+		ubifs_perf_lrcount(sched_clock() - time1, len);
+#endif
 
 	if (le32_to_cpu(ch->magic) != UBIFS_NODE_MAGIC)
 		return 0;
@@ -2685,6 +2675,7 @@ out_unlock:
 int ubifs_tnc_remove_ino(struct ubifs_info *c, ino_t inum)
 {
 	union ubifs_key key1, key2;
+#if 0   /* MTK no need anymore*/
 	struct ubifs_dent_node *xent, *pxent = NULL;
 	struct qstr nm = { .name = NULL };
 
@@ -2733,6 +2724,7 @@ int ubifs_tnc_remove_ino(struct ubifs_info *c, ino_t inum)
 	}
 
 	kfree(pxent);
+#endif
 	lowest_ino_key(c, &key1, inum);
 	highest_ino_key(c, &key2, inum);
 
@@ -2875,10 +2867,11 @@ void ubifs_tnc_close(struct ubifs_info *c)
 {
 	tnc_destroy_cnext(c);
 	if (c->zroot.znode) {
-		long n;
+		long n, freed;
 
-		ubifs_destroy_tnc_subtree(c->zroot.znode);
 		n = atomic_long_read(&c->clean_zn_cnt);
+		freed = ubifs_destroy_tnc_subtree(c->zroot.znode);
+		ubifs_assert(freed == n);
 		atomic_long_sub(n, &ubifs_clean_zn_cnt);
 	}
 	kfree(c->gap_lebs);
@@ -3309,7 +3302,6 @@ int dbg_check_inode_size(struct ubifs_info *c, const struct inode *inode,
 		goto out_unlock;
 
 	if (err) {
-		err = -EINVAL;
 		key = &from_key;
 		goto out_dump;
 	}

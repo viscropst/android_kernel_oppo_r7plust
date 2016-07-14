@@ -8,7 +8,6 @@
 #include <linux/writeback.h>
 #include <linux/sysctl.h>
 #include <linux/gfp.h>
-#include <linux/export.h>
 #include "internal.h"
 
 /* A global variable is a bit ugly, but it keeps the code simple */
@@ -45,19 +44,13 @@ static void drop_slab(void)
 		.gfp_mask = GFP_KERNEL,
 	};
 
+	nodes_setall(shrink.nodes_to_scan);
 	do {
 		nr_objects = shrink_slab(&shrink, 1000, 1000);
 	} while (nr_objects > 10);
 }
 
-/* For TuxOnIce */
-void drop_pagecache(void)
-{
-	iterate_supers(drop_pagecache_sb, NULL);
-}
-EXPORT_SYMBOL_GPL(drop_pagecache);
-
-int drop_caches_sysctl_handler(ctl_table *table, int write,
+int drop_caches_sysctl_handler(struct ctl_table *table, int write,
 	void __user *buffer, size_t *length, loff_t *ppos)
 {
 	int ret;
@@ -66,10 +59,22 @@ int drop_caches_sysctl_handler(ctl_table *table, int write,
 	if (ret)
 		return ret;
 	if (write) {
-		if (sysctl_drop_caches & 1)
+		static int stfu;
+
+		if (sysctl_drop_caches & 1) {
 			iterate_supers(drop_pagecache_sb, NULL);
-		if (sysctl_drop_caches & 2)
+			count_vm_event(DROP_PAGECACHE);
+		}
+		if (sysctl_drop_caches & 2) {
 			drop_slab();
+			count_vm_event(DROP_SLAB);
+		}
+		if (!stfu) {
+			pr_info("%s (%d): drop_caches: %d\n",
+				current->comm, task_pid_nr(current),
+				sysctl_drop_caches);
+		}
+		stfu |= sysctl_drop_caches & 4;
 	}
 	return 0;
 }

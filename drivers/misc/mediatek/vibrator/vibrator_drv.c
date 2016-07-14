@@ -25,20 +25,21 @@
 #include <linux/jiffies.h>
 #include <linux/timer.h>
 
-#include <mach/mt_typedefs.h>
 /* #include <mach/mt6577_pm_ldo.h> */
 
-#include <cust_vibrator.h>
+#include <vibrator.h>
 #include <vibrator_hal.h>
-
 
 #define VERSION					        "v 0.1"
 #define VIB_DEVICE				"mtk_vibrator"
 
-//PIN VIBRO
-#define VIBRA_PIN_2            GPIO_KPD_KCOL1_PIN
-#define VIBRA_PIN_1            GPIO_KPD_KCOL2_PIN
-#define VIBRA_PIN_3            GPIO_KPD_KCOL3_PIN
+static int debug_enable_vib_hal = 1;
+/* #define pr_fmt(fmt) "[vibrator]"fmt */
+#define VIB_DEBUG(format, args...) do { \
+	if (debug_enable_vib_hal) {\
+		pr_debug(format, ##args);\
+	} \
+} while (0)
 
 /******************************************************************************
 Error Code No.
@@ -62,7 +63,7 @@ Debug Message Settings
 #define MSG(evt, fmt, args...) \
 do {	\
 	if ((DBG_EVT_##evt) & DBG_EVT_MASK) { \
-		printk(fmt, ##args); \
+		VIB_DEBUG(fmt, ##args); \
 	} \
 } while (0)
 
@@ -71,7 +72,6 @@ do {	\
 #define MSG(evt, fmt, args...) do {} while (0)
 #define MSG_FUNC_ENTRY(f)	   do {} while (0)
 #endif
-
 
 /******************************************************************************
 Global Definations
@@ -88,17 +88,6 @@ static int vibr_Enable(void)
 {
 	if (!ldo_state) {
 		vibr_Enable_HW();
-		mt_set_gpio_mode(VIBRA_PIN_3, 3);
-
-		mt_set_gpio_mode(VIBRA_PIN_2, 0);
-		mt_set_gpio_dir(VIBRA_PIN_2, 1);
-		mt_set_gpio_out(VIBRA_PIN_2, 1);
-
-		mt_set_gpio_mode(VIBRA_PIN_1, 0);
-		mt_set_gpio_dir(VIBRA_PIN_1, 1);
-		mt_set_gpio_out(VIBRA_PIN_1, 1);
-
-		//vibr_ON
 		ldo_state = 1;
 	}
 	return 0;
@@ -108,23 +97,10 @@ static int vibr_Disable(void)
 {
 	if (ldo_state) {
 		vibr_Disable_HW();
-		mt_set_gpio_out(VIBRA_PIN_1, 0);
-
-		mt_set_gpio_mode(VIBRA_PIN_2, 0);
-		mt_set_gpio_dir(VIBRA_PIN_2, 1);
-		mt_set_gpio_out(VIBRA_PIN_2, 0);;
-
-		//mt_pwm_disable(2, 0);
-		mt_set_gpio_mode(VIBRA_PIN_3, 0);
-		mt_set_gpio_dir(VIBRA_PIN_3, 1);
-		mt_set_gpio_out(VIBRA_PIN_3, 0);
-
-		//vibr_OFF
 		ldo_state = 0;
 	}
 	return 0;
 }
-
 
 static void update_vibrator(struct work_struct *work)
 {
@@ -138,6 +114,7 @@ static int vibrator_get_time(struct timed_output_dev *dev)
 {
 	if (hrtimer_active(&vibe_timer)) {
 		ktime_t r = hrtimer_get_remaining(&vibe_timer);
+
 		return ktime_to_ms(r);
 	} else
 		return 0;
@@ -147,25 +124,24 @@ static void vibrator_enable(struct timed_output_dev *dev, int value)
 {
 	unsigned long flags;
 
-
 #if 1
-	/* struct vibrator_hw* hw = get_cust_vibrator_hw(); */
 	struct vibrator_hw *hw = mt_get_cust_vibrator_hw();
-
 #endif
-	printk("[vibrator]vibrator_enable: vibrator first in value = %d\n", value);
+
+	VIB_DEBUG("vibrator_enable: vibrator first in value = %d\n", value);
 
 	spin_lock_irqsave(&vibe_lock, flags);
-	while (hrtimer_cancel(&vibe_timer)) {
-		printk("[vibrator]vibrator_enable: try to cancel hrtimer\n");
-	}
+	while (hrtimer_cancel(&vibe_timer))
+		VIB_DEBUG("vibrator_enable: try to cancel hrtimer\n");
 
 	if (value == 0 || shutdown_flag == 1) {
-		printk("[vibrator]vibrator_enable: shutdown_flag = %d\n", shutdown_flag);
+		VIB_DEBUG("vibrator_enable: shutdown_flag = %d\n",
+			  shutdown_flag);
 		vibe_state = 0;
 	} else {
 #if 1
-		printk("[vibrator]vibrator_enable: vibrator cust timer: %d\n", hw->vib_timer);
+		VIB_DEBUG("vibrator_enable: vibrator cust timer: %d\n",
+			  hw->vib_timer);
 #ifdef CUST_VIBR_LIMIT
 		if (value > hw->vib_limit && value < hw->vib_timer)
 #else
@@ -177,17 +153,18 @@ static void vibrator_enable(struct timed_output_dev *dev, int value)
 		value = (value > 15000 ? 15000 : value);
 		vibe_state = 1;
 		hrtimer_start(&vibe_timer,
-			      ktime_set(value / 1000, (value % 1000) * 1000000), HRTIMER_MODE_REL);
+			      ktime_set(value / 1000, (value % 1000) * 1000000),
+			      HRTIMER_MODE_REL);
 	}
 	spin_unlock_irqrestore(&vibe_lock, flags);
-	printk("[vibrator]vibrator_enable: vibrator start: %d\n", value);
+	VIB_DEBUG("vibrator_enable: vibrator start: %d\n", value);
 	queue_work(vibrator_queue, &vibrator_work);
 }
 
 static enum hrtimer_restart vibrator_timer_func(struct hrtimer *timer)
 {
 	vibe_state = 0;
-	printk(KERN_DEBUG "[vibrator]vibrator_timer_func: vibrator will disable\n");
+	VIB_DEBUG("vibrator_timer_func: vibrator will disable\n");
 	queue_work(vibrator_queue, &vibrator_work);
 	return HRTIMER_NORESTART;
 }
@@ -211,15 +188,18 @@ static int vib_remove(struct platform_device *pdev)
 static void vib_shutdown(struct platform_device *pdev)
 {
 	unsigned long flags;
-	printk("[vibrator]vib_shutdown: enter!\n");
+
+	VIB_DEBUG("vib_shutdown: enter!\n");
 	spin_lock_irqsave(&vibe_lock, flags);
 	shutdown_flag = 1;
 	if (vibe_state) {
-		printk("[vibrator]vib_shutdown: vibrator will disable\n");
+		VIB_DEBUG("vib_shutdown: vibrator will disable\n");
 		vibe_state = 0;
+		spin_unlock_irqrestore(&vibe_lock, flags);
 		vibr_Disable();
+	} else {
+		spin_unlock_irqrestore(&vibe_lock, flags);
 	}
-	spin_unlock_irqrestore(&vibe_lock, flags);
 }
 
 /******************************************************************************
@@ -240,16 +220,15 @@ static struct platform_device vibrator_device = {
 	.id = -1,
 };
 
-static ssize_t store_vibr_on(struct device *dev, struct device_attribute *attr, const char *buf,
-			     size_t size)
+static ssize_t store_vibr_on(struct device *dev, struct device_attribute *attr,
+			     const char *buf, size_t size)
 {
 	if (buf != NULL && size != 0) {
-		//printk("[vibrator]buf is %s and size is %d\n", buf, size);
-		if (buf[0] == '0') {
+		/* VIB_DEBUG("buf is %s and size is %d\n", buf, size); */
+		if (buf[0] == '0')
 			vibr_Disable();
-		} else {
+		else
 			vibr_Enable();
-		}
 	}
 	return size;
 }
@@ -277,17 +256,20 @@ static int vib_mod_init(void)
 {
 	s32 ret;
 
-	printk("MediaTek MTK vibrator driver register, version %s\n", VERSION);
-	vibr_power_set();	/* set vibr voltage if needs.  Before MT6320 vibr default voltage=2.8v but in MT6323 vibr default voltage=1.2v */
+	VIB_DEBUG("MediaTek MTK vibrator driver register, version %s\n",
+		  VERSION);
+	/* set vibr voltage if needs.  Before MT6320 vibr default voltage=2.8v,
+	   but in MT6323 vibr default voltage=1.2v */
+	vibr_power_set();
 	ret = platform_device_register(&vibrator_device);
 	if (ret != 0) {
-		printk("[vibrator]Unable to register vibrator device (%d)\n", ret);
+		VIB_DEBUG("Unable to register vibrator device (%d)\n", ret);
 		return ret;
 	}
 
 	vibrator_queue = create_singlethread_workqueue(VIB_DEVICE);
 	if (!vibrator_queue) {
-		printk("[vibrator]Unable to create workqueue\n");
+		VIB_DEBUG("Unable to create workqueue\n");
 		return -ENODATA;
 	}
 	INIT_WORK(&vibrator_work, update_vibrator);
@@ -303,16 +285,15 @@ static int vib_mod_init(void)
 	ret = platform_driver_register(&vibrator_driver);
 
 	if (ret) {
-		printk("[vibrator]Unable to register vibrator driver (%d)\n", ret);
+		VIB_DEBUG("Unable to register vibrator driver (%d)\n", ret);
 		return ret;
 	}
 
 	ret = device_create_file(mtk_vibrator.dev, &dev_attr_vibr_on);
-	if (ret) {
-		printk("[vibrator]device_create_file vibr_on fail!\n");
-	}
+	if (ret)
+		VIB_DEBUG("device_create_file vibr_on fail!\n");
 
-	printk("[vibrator]vib_mod_init Done\n");
+	VIB_DEBUG("vib_mod_init Done\n");
 
 	return RSUCCESS;
 }
@@ -336,12 +317,13 @@ static int vib_mod_init(void)
 
 static void vib_mod_exit(void)
 {
-	printk("MediaTek MTK vibrator driver unregister, version %s\n", VERSION);
-	if (vibrator_queue) {
+	VIB_DEBUG("MediaTek MTK vibrator driver unregister, version %s\n",
+		  VERSION);
+	if (vibrator_queue)
 		destroy_workqueue(vibrator_queue);
-	}
-	printk("[vibrator]vib_mod_exit Done\n");
+	VIB_DEBUG("vib_mod_exit Done\n");
 }
+
 module_init(vib_mod_init);
 module_exit(vib_mod_exit);
 MODULE_AUTHOR("MediaTek Inc.");

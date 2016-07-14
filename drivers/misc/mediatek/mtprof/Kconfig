@@ -1,0 +1,54 @@
+config MTPROF
+	bool "Enable MTK profiler/debugger tool"
+	help
+	  CONFIG_MTPROF define if mtk profiling tools should be built-in or not. It
+	  includes workqueue debugger, signal debugger, cputime, bootprof, and other
+	  misc tools. If you are not sure about whether to enable it or not, please
+	  set n.
+
+if MTPROF
+
+config MTK_LOCK_DEBUG
+	bool "Support some MTK lock debug patches"
+	default y
+	help
+	  CONFIG_MTK_LOCK_DEBUG is used to catch db when spinlock spin more than 1s and to catch
+	  db when check lock fail,such as bug_header,circular_bug,deadlock_bug and so on
+	  Say Y here to enable, If you are not sure about whether to enable it or not, please
+	  set n.
+
+config MTPROF_CPUTIME
+	bool "thread cputime profiling"
+	depends on SCHEDSTATS
+	help
+	  CONFIG_MTPROF_CPUTIME is used to measure process/irq execution time and export
+	  the information in /proc/mtprof/cputime. Say Y here to enable thread cputime
+	  profiling. If you are not sure about whether to enable it or not, please
+	  set n.
+
+config MTK_WQ_DEBUG
+	bool "mtk workqueue debug"
+	help
+	  CONFIG_MTK_WQ_DEBUG define if workqueue debugging should be built-in or not
+	  It will add logs to monitor work activation, queue, and execution. Say y to
+	  enable mtk workqueue debug, or if you are not sure about this, please
+	  set n
+
+config MT_SCHED_MONITOR
+	bool "mt scheduler monitor"
+	default n
+	help
+	  MT_SCHED_MONITOR is used to monitor ISR/SOFTIRQ/TASKLET/HRTIMER/STIMER/PREEPT
+	  disable duration. Say Y here to enable ISR/SOFTIRQ/TASKLET/HRTIMER/STIMER
+	  monitor. If you are not sure about whether to enable it or not, please
+	  set n.
+
+config MT_RT_THROTTLE_MON
+	bool "mt rt throttle monitor"
+	default n
+	help
+	  MT_RT_THROTTLE_MON is used to monitor rt throttle. When rt throttle activated
+	  print 5 longest execusion time rt tasks. Say Y here to enable rt throttle
+	  monitor. If you are not sure about whether to enable it or not, please set n.
+
+endif

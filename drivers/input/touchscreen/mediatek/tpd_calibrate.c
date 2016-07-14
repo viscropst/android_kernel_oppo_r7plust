@@ -12,6 +12,7 @@ int tpd_wb_end[TPD_WARP_CNT] = { 0 };
 void tpd_warp_calibrate(int *x, int *y)
 {
 	int wx = *x, wy = *y;
+
 	if (wx < tpd_wb_start[0] && tpd_wb_start[0] > 0) {
 		wx = tpd_wb_start[0] -
 		    ((tpd_wb_start[0] - wx) * (tpd_wb_start[0] -
@@ -45,6 +46,7 @@ void tpd_warp_calibrate(int *x, int *y)
 void tpd_calibrate(int *x, int *y)
 {
 	int tx, i;
+
 	if (tpd_calmat[0] == 0)
 		for (i = 0; i < 6; i++)
 			tpd_calmat[i] = tpd_def_calmat[i];

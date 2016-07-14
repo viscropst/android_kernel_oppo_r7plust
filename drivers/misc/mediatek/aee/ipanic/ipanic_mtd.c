@@ -18,12 +18,12 @@ static struct ipanic_mtd_data *ipanic_mtd_ctx;
 
 static int ipanic_mtd_block_read_single(struct ipanic_mtd_data *ctx, loff_t offset, void *buf)
 {
-	int rc, len;
+	int rc;
+	size_t len;
 	int index = offset >> ctx->mtd->writesize_shift;
 
-	if ((index < 0) || (index >= ctx->blk_nr)) {
+	if ((index < 0) || (index >= ctx->blk_nr))
 		return -EINVAL;
-	}
 
 	rc = ctx->mtd->_read(ctx->mtd, ctx->blk_offset[index], ctx->mtd->writesize, &len, buf);
 #if 0
@@ -37,7 +37,7 @@ static int ipanic_mtd_block_read_single(struct ipanic_mtd_data *ctx, loff_t offs
 		rc = 0;
 	}
 	if ((rc == 0) && (len != ctx->mtd->writesize)) {
-		LOGE("aee-ipanic: read size mismatch %d\n", len);
+		LOGE("aee-ipanic: read size mismatch %zu\n", len);
 		return -EINVAL;
 	}
 	return rc;
@@ -80,12 +80,12 @@ static int ipanic_mtd_block_write(struct ipanic_mtd_data *ctx, loff_t to, int bo
 {
 	int rc;
 	size_t wlen;
-	int panic = in_interrupt() | in_atomic();
+	/*int panic = in_interrupt() | in_atomic();*/
+	int panic = in_interrupt(); /*remove in_atomic() since checkpatch: do not use in_atomic in drivers*/
 	int index = to >> ctx->mtd->writesize_shift;
 
-	if ((index < 0) || (index >= ctx->blk_nr)) {
+	if ((index < 0) || (index >= ctx->blk_nr))
 		return -EINVAL;
-	}
 
 	if (bounce_len > ctx->mtd->writesize) {
 		LOGE("%s: len too large[%x]\n", __func__, bounce_len);
@@ -128,9 +128,8 @@ static int ipanic_mtd_block_scan(struct ipanic_mtd_data *ctx)
 		if (!ctx->mtd->_block_isbad(ctx->mtd, offset)) {
 
 			/*index can't surpass array size */
-			if (index >= (sizeof(ctx->blk_offset) / sizeof(u32))) {
+			if (index >= (sizeof(ctx->blk_offset) / sizeof(u32)))
 				break;
-			}
 
 			ctx->blk_offset[index++] = offset;
 		}
@@ -139,9 +138,8 @@ static int ipanic_mtd_block_scan(struct ipanic_mtd_data *ctx)
 
 #if 0
 	LOGI("blocks: ");
-	for (index = 0; index < ctx->blk_nr; index++) {
+	for (index = 0; index < ctx->blk_nr; index++)
 		LOGI("%x,", ctx->blk_offset[index]);
-	}
 	LOGI("\n");
 #endif
 	return 1;
@@ -150,6 +148,7 @@ static int ipanic_mtd_block_scan(struct ipanic_mtd_data *ctx)
 static void ipanic_mtd_block_erase_callback(struct erase_info *done)
 {
 	wait_queue_head_t *wait_q = (wait_queue_head_t *) done->priv;
+
 	wake_up(wait_q);
 }
 
@@ -203,7 +202,7 @@ static void ipanic_mtd_block_erase(void)
 		remove_wait_queue(&wait_q, &wait);
 	}
 	LOGD("%s partition erased\n", AEE_IPANIC_PLABEL);
- out:
+out:
 	return;
 }
 
@@ -222,17 +221,18 @@ static void ipanic_mtd_notify_add(struct mtd_info *mtd)
 	LOGI("Bound to '%s', write size(%d), write size shift(%d)\n",
 	     mtd->name, mtd->writesize, mtd->writesize_shift);
 	ctx->bufsize = ALIGN(PAGE_SIZE, mtd->writesize);
-	ctx->buf = (u64) (int)kmalloc(ctx->bufsize, GFP_KERNEL);
+	ctx->buf = (u64) (unsigned long)kmalloc(ctx->bufsize, GFP_KERNEL);
 	ipanic_mtd_ctx = ctx;
 	return;
 
- out_err:
+out_err:
 	ctx->mtd = NULL;
 }
 
 static void ipanic_mtd_notify_remove(struct mtd_info *mtd)
 {
 	struct ipanic_mtd_data *ctx = ipanic_mtd_ctx;
+
 	if (mtd == ctx->mtd) {
 		ctx->mtd = NULL;
 		LOGI("aee-ipanic: Unbound from %s\n", mtd->name);

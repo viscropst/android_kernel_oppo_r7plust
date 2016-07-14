@@ -2,11 +2,8 @@
 #define __AAL_CONTROL_H__
 
 #define AAL_TAG                  "[ALS/AAL]"
-#define AAL_LOG(fmt, args...)	 printk(KERN_ERR AAL_TAG fmt, ##args)
-#define AAL_FUN(f)               printk(KERN_INFO 	AAL_TAG"%s\n", __FUNCTION__)
-#define AAL_ERR(fmt, args...)    printk(KERN_ERR  	AAL_TAG"%s %d : "fmt, __FUNCTION__, __LINE__, ##args)
-#endif
+#define AAL_LOG(fmt, args...)	 pr_debug(AAL_TAG fmt, ##args)
+#define AAL_ERR(fmt, args...)    pr_err(AAL_TAG fmt, ##args)
 extern int aal_use;
-
-
+#endif
 

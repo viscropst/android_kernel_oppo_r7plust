@@ -11,15 +11,7 @@
 #include <linux/seq_file.h>
 
 #include "mlog_internal.h"
-
-
-extern wait_queue_head_t mlog_wait;
-extern void mlog_doopen(void);
-extern int mlog_unread(void);
-extern int mlog_doread(char __user *buf, size_t len);
-extern int mlog_show_info(struct seq_file *m, void *v);
-extern int mlog_print_fmt(struct seq_file *m);
-
+#include "mlog_dump.h"
 
 static int mlog_open(struct inode *inode, struct file *file)
 {

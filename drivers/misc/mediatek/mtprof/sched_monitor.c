@@ -1,11 +1,9 @@
 #include <linux/proc_fs.h>
 #include <linux/sched.h>
-#include <linux/seq_file.h>
 #include <linux/kallsyms.h>
 #include <linux/utsname.h>
 #include <linux/slab.h>
-#include <asm/uaccess.h>
-#include "prof_ctl.h"
+#include <linux/uaccess.h>
 #include <linux/module.h>
 #include <linux/pid.h>
 
@@ -13,18 +11,20 @@
 #include <linux/irqnr.h>
 #include <linux/interrupt.h>
 
-#include <linux/mt_sched_mon.h>
 #include <linux/stacktrace.h>
 
-#include <linux/aee.h>
+#include <mt-plat/aee.h>
 #include <linux/stacktrace.h>
-
+#include "mt_sched_mon.h"
+#include "internal.h"
 
 #define WARN_ISR_DUR     3000000
 #define WARN_SOFTIRQ_DUR 10000000
 #define WARN_TASKLET_DUR 10000000
 #define WARN_HRTIMER_DUR 3000000
 #define WARN_STIMER_DUR  10000000
+#define WARN_BURST_IRQ_DETECT 50000
+
 
 enum mt_event_type {
 	evt_ISR = 1,
@@ -62,85 +62,20 @@ DEFINE_PER_CPU(int, MT_trace_in_resume_console);
 
 static DEFINE_MUTEX(mt_sched_mon_lock);
 
-void mt_sched_monitor_switch(int on);
 
 /* //////////////////////////////////////////////////////// */
-/* Some utility macro */
-#define SEQ_printf(m, x...)	    \
- do {			    \
-    if (m)		    \
-	seq_printf(m, x);	\
-    else		    \
-	pr_err(x);	    \
- } while (0)
-
-#define MT_DEBUG_ENTRY(name) \
-static int mt_##name##_show(struct seq_file *m, void *v);\
-static ssize_t mt_##name##_write(struct file *filp, const char *ubuf, size_t cnt, loff_t *data);\
-static int mt_##name##_open(struct inode *inode, struct file *file) \
-{ \
-    return single_open(file, mt_##name##_show, inode->i_private); \
-} \
-\
-static const struct file_operations mt_##name##_fops = { \
-    .open = mt_##name##_open, \
-    .write = mt_##name##_write,\
-    .read = seq_read, \
-    .llseek = seq_lseek, \
-    .release = single_release, \
-};\
-void mt_##name##_switch(int on);
-
-/*
- * Ease the printing of nsec fields:
- */
-static long long nsec_high(unsigned long long nsec)
-{
-	if ((long long)nsec < 0) {
-		nsec = -nsec;
-		do_div(nsec, 1000000);
-		return -nsec;
-	}
-	do_div(nsec, 1000000);
-
-	return nsec;
-}
-
-static unsigned long nsec_low(unsigned long long nsec)
-{
-	if ((long long)nsec < 0)
-		nsec = -nsec;
-
-	return do_div(nsec, 1000000);
-}
-
-#define SPLIT_NS(x) nsec_high(x), nsec_low(x)
+#define SPLIT_NS_H(x) nsec_high(x)
+#define SPLIT_NS_L(x) nsec_low(x)
 
 /*  */
 /* //////////////////////////////////////////////////////// */
 /* --------------------------------------------------- */
 /* Real work */
 #ifdef CONFIG_MT_SCHED_MONITOR
-static const char *isr_name(int irq)
-{
-	struct irqaction *action;
-	struct irq_desc *desc;
-
-	desc = irq_to_desc(irq);
-	if (!desc)
-		return NULL;
-	else {
-		action = desc->action;
-		if (!action)
-			return NULL;
-		else
-			return action->name;
-	}
-}
-
 static void event_duration_check(struct sched_block_event *b)
 {
 	unsigned long long t_dur;
+
 	t_dur = b->last_te - b->last_ts;
 	switch (b->type) {
 	case evt_ISR:
@@ -150,21 +85,21 @@ static void event_duration_check(struct sched_block_event *b)
 			     (int)b->last_event, isr_name(b->last_event), t_dur,
 			     WARN_ISR_DUR / 1000000, b->last_ts, b->last_te);
 		}
-        if(b->preempt_count != preempt_count()){
-            pr_debug("[ISR WARN]IRQ[%d:%s], Unbalanced Preempt Count:0x%x! Should be 0x%x\n",(int)b->last_event, isr_name(b->last_event), preempt_count(), b->preempt_count);
-        }
+		if (b->preempt_count != preempt_count())
+			pr_err("[ISR WARN]IRQ[%d:%s], Unbalanced Preempt Count:0x%x! Should be 0x%x\n",
+				 (int)b->last_event, isr_name(b->last_event), preempt_count(), b->preempt_count);
 
 		break;
 	case evt_SOFTIRQ:
 		if (t_dur > WARN_SOFTIRQ_DUR) {
 			struct sched_block_event *b_isr;
+
 			b_isr = &__raw_get_cpu_var(ISR_mon);
 			pr_err
 			    ("[SOFTIRQ DURATION WARN] SoftIRQ:%d, dur:%llu ns > %d ms,(s:%llu,e:%llu)\n",
 			     (int)b->last_event, t_dur, WARN_SOFTIRQ_DUR / 1000000, b->last_ts,
 			     b->last_te);
-			if (b_isr->last_ts > b->last_ts)	/* ISR occur during Tasklet */
-			{
+			if (b_isr->last_ts > b->last_ts) {	/* ISR occur during Tasklet */
 				pr_err
 				    (" IRQ occurrs in this duration, IRQ[%d:%s], dur:%llu ns (s:%llu, e:%llu)\n\n",
 				     (int)b_isr->last_event, isr_name(b_isr->last_event),
@@ -172,20 +107,20 @@ static void event_duration_check(struct sched_block_event *b)
 				     b_isr->last_te);
 			}
 		}
-        if(b->preempt_count != preempt_count()){
-            pr_debug("[SOFTIRQ WARN] SoftIRQ:%d, Unbalanced Preempt Count:0x%x! Should be 0x%x\n",(int)b->last_event, preempt_count(), b->preempt_count);
-        }
+		if (b->preempt_count != preempt_count())
+			pr_err("[SOFTIRQ WARN] SoftIRQ:%d, Unbalanced Preempt Count:0x%x! Should be 0x%x\n",
+				 (int)b->last_event, preempt_count(), b->preempt_count);
 		break;
 	case evt_TASKLET:
 		if (t_dur > WARN_TASKLET_DUR) {
 			struct sched_block_event *b_isr;
+
 			b_isr = &__raw_get_cpu_var(ISR_mon);
 			pr_err
 			    ("[TASKLET DURATION WARN] Tasklet:%pS, dur:%llu ns > %d ms,(s:%llu,e:%llu)\n",
 			     (void *)b->last_event, t_dur, WARN_TASKLET_DUR / 1000000, b->last_ts,
 			     b->last_te);
-			if (b_isr->last_ts > b->last_ts)	/* ISR occur during Tasklet */
-			{
+			if (b_isr->last_ts > b->last_ts) {	/* ISR occur during Tasklet */
 				pr_err
 				    (" IRQ occurrs in this duration, IRQ[%d:%s], dur:%llu ns (s:%llu, e:%llu)\n\n",
 				     (int)b_isr->last_event, isr_name(b_isr->last_event),
@@ -193,9 +128,9 @@ static void event_duration_check(struct sched_block_event *b)
 				     b_isr->last_te);
 			}
 		}
-        if(b->preempt_count != preempt_count()){
-            pr_debug("[TASKLET WARN] TASKLET:%pS, Unbalanced Preempt Count:0x%x! Should be 0x%x\n",(void *)b->last_event, preempt_count(), b->preempt_count);
-        }
+		if (b->preempt_count != preempt_count())
+			pr_err("[TASKLET WARN] TASKLET:%pS, Unbalanced Preempt Count:0x%x! Should be 0x%x\n",
+				 (void *)b->last_event, preempt_count(), b->preempt_count);
 		break;
 	case evt_HRTIMER:
 		if (t_dur > WARN_HRTIMER_DUR) {
@@ -204,20 +139,20 @@ static void event_duration_check(struct sched_block_event *b)
 			     (void *)b->last_event, t_dur, WARN_HRTIMER_DUR / 1000000, b->last_ts,
 			     b->last_te);
 		}
-        if(b->preempt_count != preempt_count()){
-            pr_debug("[HRTIMER WARN] HRTIMER:%pS, Unbalanced Preempt Count:0x%x! Should be 0x%x\n",(void *)b->last_event, preempt_count(), b->preempt_count);
-        }
+			if (b->preempt_count != preempt_count())
+				pr_err("[HRTIMER WARN] HRTIMER:%pS, Unbalanced Preempt Count:0x%x! Should be 0x%x\n",
+		     (void *)b->last_event, preempt_count(), b->preempt_count);
 		break;
 	case evt_STIMER:
 		if (t_dur > WARN_STIMER_DUR) {
 			struct sched_block_event *b_isr;
+
 			b_isr = &__raw_get_cpu_var(ISR_mon);
 			pr_err
 			    ("[STIMER DURATION WARN] SoftTIMER:%pS, dur:%llu ns > %d ms,(s:%llu,e:%llu)\n",
 			     (void *)b->last_event, t_dur, WARN_STIMER_DUR / 1000000, b->last_ts,
 			     b->last_te);
-			if (b_isr->last_ts > b->last_ts)	/* ISR occur during Softtimer */
-			{
+			if (b_isr->last_ts > b->last_ts) { /* ISR occur during Softtimer */
 				pr_err
 				    (" IRQ occurrs in this duration, IRQ[%d:%s], dur:%llu ns (s:%llu, e:%llu)\n\n",
 				     (int)b_isr->last_event, isr_name(b_isr->last_event),
@@ -225,9 +160,10 @@ static void event_duration_check(struct sched_block_event *b)
 				     b_isr->last_te);
 			}
 		}
-        if(b->preempt_count != preempt_count()){
-            pr_debug("[STTIMER WARN] SoftTIMER:%pS, Unbalanced Preempt Count:0x%x! Should be 0x%x\n",(void *)b->last_event, preempt_count(), b->preempt_count);
-        }
+		if (b->preempt_count != preempt_count()) {
+			pr_err("[STTIMER WARN] SoftTIMER:%pS, Unbalanced Preempt Count:0x%x! Should be 0x%x\n",
+				 (void *)b->last_event, preempt_count(), b->preempt_count);
+		}
 		break;
 
 	}
@@ -243,9 +179,10 @@ static void reset_event_count(struct sched_block_event *b)
 void mt_trace_ISR_start(int irq)
 {
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(ISR_mon);
 
-    b->preempt_count = preempt_count();
+	b->preempt_count = preempt_count();
 	b->cur_ts = sched_clock();
 	b->cur_event = (unsigned long)irq;
 	aee_rr_rec_last_irq_enter(smp_processor_id(), irq, b->cur_ts);
@@ -255,6 +192,7 @@ void mt_trace_ISR_start(int irq)
 void mt_trace_ISR_end(int irq)
 {
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(ISR_mon);
 
 	WARN_ON(b->cur_event != irq);
@@ -277,9 +215,10 @@ void mt_trace_SoftIRQ_start(int sq_num)
 {
 
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(SoftIRQ_mon);
 
-    b->preempt_count = preempt_count();
+	b->preempt_count = preempt_count();
 	b->cur_ts = sched_clock();
 	b->cur_event = (unsigned long)sq_num;
 }
@@ -287,6 +226,7 @@ void mt_trace_SoftIRQ_start(int sq_num)
 void mt_trace_SoftIRQ_end(int sq_num)
 {
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(SoftIRQ_mon);
 
 	WARN_ON(b->cur_event != sq_num);
@@ -309,9 +249,10 @@ void mt_trace_SoftIRQ_end(int sq_num)
 void mt_trace_tasklet_start(void *func)
 {
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(tasklet_mon);
 
-    b->preempt_count = preempt_count();
+	b->preempt_count = preempt_count();
 	b->cur_ts = sched_clock();
 	b->cur_event = (unsigned long)func;
 	b->cur_count++;
@@ -320,6 +261,7 @@ void mt_trace_tasklet_start(void *func)
 void mt_trace_tasklet_end(void *func)
 {
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(tasklet_mon);
 
 	WARN_ON(b->cur_event != (unsigned long)func);
@@ -335,9 +277,10 @@ void mt_trace_tasklet_end(void *func)
 void mt_trace_hrt_start(void *func)
 {
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(hrt_mon);
 
-    b->preempt_count = preempt_count();
+	b->preempt_count = preempt_count();
 	b->cur_ts = sched_clock();
 	b->cur_event = (unsigned long)func;
 	b->cur_count++;
@@ -346,6 +289,7 @@ void mt_trace_hrt_start(void *func)
 void mt_trace_hrt_end(void *func)
 {
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(hrt_mon);
 
 	WARN_ON(b->cur_event != (unsigned long)func);
@@ -361,9 +305,10 @@ void mt_trace_hrt_end(void *func)
 void mt_trace_sft_start(void *func)
 {
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(sft_mon);
 
-    b->preempt_count = preempt_count();
+	b->preempt_count = preempt_count();
 	b->cur_ts = sched_clock();
 	b->cur_event = (unsigned long)func;
 	b->cur_count++;
@@ -372,6 +317,7 @@ void mt_trace_sft_start(void *func)
 void mt_trace_sft_end(void *func)
 {
 	struct sched_block_event *b;
+
 	b = &__raw_get_cpu_var(sft_mon);
 
 	WARN_ON(b->cur_event != (unsigned long)func);
@@ -387,6 +333,7 @@ void mt_trace_sft_end(void *func)
 void MT_trace_preempt_off(void)
 {
 	struct sched_stop_event *e;
+
 	e = &__raw_get_cpu_var(Preempt_disable_mon);
 
 	e->cur_ts = sched_clock();
@@ -395,6 +342,7 @@ void MT_trace_preempt_off(void)
 void MT_trace_preempt_on(void)
 {
 	struct sched_stop_event *e;
+
 	e = &__raw_get_cpu_var(Preempt_disable_mon);
 	e->last_ts = e->cur_ts;
 	e->cur_ts = 0;
@@ -407,6 +355,7 @@ void MT_trace_irq_off(void)
 {
 	struct sched_stop_event *e;
 	struct stack_trace *trace;
+
 	e = &__raw_get_cpu_var(IRQ_disable_mon);
 
 	e->cur_ts = sched_clock();
@@ -425,6 +374,7 @@ void MT_trace_irq_off(void)
 void MT_trace_irq_on(void)
 {
 	struct sched_stop_event *e;
+
 	e = &__raw_get_cpu_var(IRQ_disable_mon);
 	e->last_ts = e->cur_ts;
 	e->cur_ts = 0;
@@ -445,14 +395,18 @@ unsigned long long mt_save_irq_count_time;
 DEFINE_SPINLOCK(mt_irq_count_lock);
 void mt_save_irq_counts(void)
 {
-	int irq, cpu;
+	int irq, cpu, count;
 	unsigned long flags;
+	unsigned long long t_diff, t_avg;
 
 	/* do not refresh data in 20ms */
 	if (sched_clock() - mt_save_irq_count_time < 20000000)
 		return;
 
 	spin_lock_irqsave(&mt_irq_count_lock, flags);
+
+	t_diff = sched_clock() - mt_save_irq_count_time;
+
 	if (smp_processor_id() != 0) {	/* only record by CPU#0 */
 		spin_unlock_irqrestore(&mt_irq_count_lock, flags);
 		return;
@@ -460,14 +414,22 @@ void mt_save_irq_counts(void)
 	mt_save_irq_count_time = sched_clock();
 	for (cpu = 0; cpu < num_possible_cpus(); cpu++) {
 		for (irq = 0; irq < nr_irqs && irq < MAX_NR_IRQS; irq++) {
+			count = kstat_irqs_cpu(irq, cpu) - mt_irq_count[cpu][irq];
+			if (count != 0) {
+				t_avg = t_diff;
+				do_div(t_avg, count);
+				if (t_avg < WARN_BURST_IRQ_DETECT)
+					pr_err("[BURST IRQ DURATION WARN] IRQ[%3d:%14s] +%d ( dur %lld us , avg %lld us)\n",
+						irq, isr_name(irq), count, usec_high(t_diff), usec_high(t_avg));
+			}
 			mt_irq_count[cpu][irq] = kstat_irqs_cpu(irq, cpu);
 		}
 	}
+
 #ifdef CONFIG_SMP
 	for (cpu = 0; cpu < num_possible_cpus(); cpu++) {
-		for (irq = 0; irq < NR_IPI; irq++) {
+		for (irq = 0; irq < NR_IPI; irq++)
 			mt_local_irq_count[cpu][irq] = __get_irq_stat(cpu, ipi_irqs[irq]);
-		}
 	}
 #endif
 	spin_unlock_irqrestore(&mt_irq_count_lock, flags);
@@ -535,19 +497,40 @@ void mt_save_irq_counts(void)
 #endif
  /**/
 #define TIME_3MS  3000000
+#define TIME_5MS  5000000
 #define TIME_10MS 10000000
 #define TIME_20MS 20000000
 #define TIME_1S   1000000000
+#define TIME_5S   1000000000
+#define TIME_30S  30000000000
+
+static unsigned long long t_threshold = TIME_5S;
 static DEFINE_PER_CPU(int, MT_tracing_cpu);
 static DEFINE_PER_CPU(unsigned long long, t_irq_on);
 static DEFINE_PER_CPU(unsigned long long, t_irq_off);
-void MT_trace_softirqs_on(unsigned long ip);
-void MT_trace_softirqs_off(unsigned long ip);
+void MT_trace_softirqs_on(unsigned long ip) {}
+void MT_trace_softirqs_off(unsigned long ip) {}
 
-void mt_dump_irq_off_traces(void);
+void mt_dump_irq_off_traces(void)
+{
+#ifdef CONFIG_MT_SCHED_MONITOR
+	int i;
+	struct stack_trace *trace;
+
+	trace = &__raw_get_cpu_var(MT_stack_trace);
+	pr_emerg("irq off at:%lld.%lu ms\n",
+		SPLIT_NS_H(__raw_get_cpu_var(TS_irq_off)), SPLIT_NS_L(__raw_get_cpu_var(TS_irq_off)));
+	pr_emerg("irq off backtraces:\n");
+	for (i = 0; i < trace->nr_entries; i++)
+		pr_emerg("[<%pK>] %pS\n", (void *)trace->entries[i], (void *)trace->entries[i]);
+#endif
+}
+EXPORT_SYMBOL(mt_dump_irq_off_traces);
+
 void MT_trace_hardirqs_on(void)
 {
 	unsigned long long t_diff, t_on, t_off;
+
 	if (unlikely(__raw_get_cpu_var(mtsched_mon_enabled) & 0x2)) {
 		if (0 == current->pid)	/* Ignore swap thread */
 			return;
@@ -562,17 +545,17 @@ void MT_trace_hardirqs_on(void)
 			t_diff = t_on - t_off;
 
 			__raw_get_cpu_var(t_irq_on) = t_on;
-			if (t_diff > TIME_20MS) {
-				pr_err
-				    ("\n----------------------------[IRQ disable monitor]-------------------------\n");
-				pr_err
-				    ("[Sched Latency Warning:IRQ Disable too long(>20ms)] Duration: %lld.%lu ms (off:%lld.%lums, on:%lld.%lums)\n",
-				     SPLIT_NS(t_diff), SPLIT_NS(t_off), SPLIT_NS(t_on));
+			if (t_diff > t_threshold) {
+				pr_emerg("\n----------------------------[IRQ disable monitor]-------------------------\n");
+				pr_emerg("[Sched Latency Warning:IRQ Disable too long(>%lldms)] Duration: %lld.%lu ms (off:%lld.%lums, on:%lld.%lums)\n",
+				     nsec_high(t_threshold),
+				     SPLIT_NS_H(t_diff), SPLIT_NS_L(t_diff), SPLIT_NS_H(t_off),
+				     SPLIT_NS_L(t_off), SPLIT_NS_H(t_on), SPLIT_NS_L(t_on));
 				mt_dump_irq_off_traces();
-				pr_err("irq on at: %lld.%lu ms\n", SPLIT_NS(t_on));
-				pr_err("irq on backtraces:\n");
+				pr_emerg("irq on at: %lld.%lu ms\n", SPLIT_NS_H(t_on),  SPLIT_NS_L(t_on));
+				pr_emerg("irq on backtraces:\n");
 				dump_stack();
-				pr_err
+				pr_emerg
 				    ("--------------------------------------------------------------------------\n\n");
 			}
 			__raw_get_cpu_var(t_irq_off) = 0;
@@ -599,20 +582,7 @@ void MT_trace_hardirqs_off(void)
 }
 EXPORT_SYMBOL(MT_trace_hardirqs_off);
 
-void mt_dump_irq_off_traces(void)
-{
-#ifdef CONFIG_MT_SCHED_MONITOR
-	int i;
-	struct stack_trace *trace;
-	trace = &__raw_get_cpu_var(MT_stack_trace);
-	pr_err("irq off at:%lld.%lu ms\n", SPLIT_NS(__raw_get_cpu_var(TS_irq_off)));
-	pr_err("irq off backtraces:\n");
-	for (i = 0; i < trace->nr_entries; i++) {
-		pr_err("[<%pK>] %pS\n", (void *)trace->entries[i], (void *)trace->entries[i]);
-	}
-#endif
-}
-EXPORT_SYMBOL(mt_dump_irq_off_traces);
+
 /* --------------------------------------------------- */
 /*                     Define Proc entry               */
 /* --------------------------------------------------- */
@@ -620,6 +590,7 @@ MT_DEBUG_ENTRY(sched_monitor);
 static int mt_sched_monitor_show(struct seq_file *m, void *v)
 {
 	int cpu;
+
 	SEQ_printf(m, "=== mt Scheduler monitoring ===\n");
 	SEQ_printf(m,
 		   " 0: Disable All\n 1: [Preemption] Monitor\n 2: [IRQ disable] Monitor\n 3: Enable All\n");
@@ -631,6 +602,20 @@ static int mt_sched_monitor_show(struct seq_file *m, void *v)
 
 	return 0;
 }
+void mt_sched_monitor_switch(int on)
+{
+	int cpu;
+
+	preempt_disable_notrace();
+	mutex_lock(&mt_sched_mon_lock);
+	for_each_possible_cpu(cpu) {
+		pr_emerg("[mtprof] sched monitor on CPU#%d switch from %d to %d\n", cpu,
+		       per_cpu(mtsched_mon_enabled, cpu), on);
+		per_cpu(mtsched_mon_enabled, cpu) = on;	/* 0x1 || 0x2, IRQ & Preempt */
+	}
+	mutex_unlock(&mt_sched_mon_lock);
+	preempt_enable_notrace();
+}
 
 static ssize_t mt_sched_monitor_write(struct file *filp, const char *ubuf,
 				      size_t cnt, loff_t *data)
@@ -638,6 +623,7 @@ static ssize_t mt_sched_monitor_write(struct file *filp, const char *ubuf,
 	char buf[64];
 	int val;
 	int ret;
+
 	if (cnt >= sizeof(buf))
 		return -EINVAL;
 
@@ -646,7 +632,7 @@ static ssize_t mt_sched_monitor_write(struct file *filp, const char *ubuf,
 
 	buf[cnt] = 0;
 
-	ret = strict_strtoul(buf, 10, (unsigned long *)&val);
+	ret = kstrtoul(buf, 10, (unsigned long *)&val);
 	if (ret < 0)
 		return ret;
 	/* 0: off, 1:on */
@@ -672,28 +658,15 @@ void stop_sched_monitor(void)
 {
 }
 
-void mt_sched_monitor_switch(int on)
-{
-	int cpu;
-	preempt_disable_notrace();
-	mutex_lock(&mt_sched_mon_lock);
-	for_each_possible_cpu(cpu) {
-		pr_err("[mtprof] sched monitor on CPU#%d switch from %d to %d\n", cpu,
-		       per_cpu(mtsched_mon_enabled, cpu), on);
-		per_cpu(mtsched_mon_enabled, cpu) = on;	/* 0x1 || 0x2, IRQ & Preempt */
-	}
-	mutex_unlock(&mt_sched_mon_lock);
-	preempt_enable_notrace();
-}
-
 static int __init init_mtsched_mon(void)
 {
 #ifdef CONFIG_MT_SCHED_MONITOR
 	int cpu;
 	struct proc_dir_entry *pe;
+
 	for_each_possible_cpu(cpu) {
 		per_cpu(MT_stack_trace, cpu).entries =
-		    kmalloc(MAX_STACK_TRACE_DEPTH * 4, GFP_KERNEL);
+		    kmalloc(MAX_STACK_TRACE_DEPTH * sizeof(unsigned long), GFP_KERNEL);
 		per_cpu(MT_tracing_cpu, cpu) = 0;
 		per_cpu(mtsched_mon_enabled, cpu) = 0;	/* 0x1 || 0x2, IRQ & Preempt */
 
@@ -704,14 +677,14 @@ static int __init init_mtsched_mon(void)
 		per_cpu(sft_mon, cpu).type = evt_STIMER;
 	}
 
-	if (!proc_mkdir("mtmon", NULL)) {
+	if (!proc_mkdir("mtmon", NULL))
 		return -1;
-	}
 	pe = proc_create("mtmon/sched_mon", 0664, NULL, &mt_sched_monitor_fops);
 	if (!pe)
 		return -ENOMEM;
+
 #endif
 	return 0;
 }
 
-__initcall(init_mtsched_mon);
+device_initcall(init_mtsched_mon);

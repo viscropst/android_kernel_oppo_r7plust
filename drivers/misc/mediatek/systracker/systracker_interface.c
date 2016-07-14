@@ -5,7 +5,6 @@
 #include <linux/kallsyms.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
-#include <linux/mtk_ram_console.h>
 #include <linux/sched.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -13,7 +12,9 @@
 #include <asm/system_misc.h>
 #include <asm/signal.h>
 #include <linux/cpu.h>
-#include <mach/sync_write.h>
+#include <mtk_ram_console.h>
+#include <mt-plat/sync_write.h>
+#include <mt-plat/mt_io.h>
 #include "systracker.h"
 
 #define TRACKER_DEBUG 1
@@ -25,42 +26,41 @@ struct systracker_entry_t track_entry;
 unsigned int is_systracker_irq_registered = 0;
 
 static const struct of_device_id systracker_of_ids[] = {
-	{   .compatible = "mediatek,BUS_DBG", },
+	{.compatible = "mediatek,bus_dbg-v1",},
 	{}
 };
 
-static struct mt_systracker_driver mt_systracker_drv =
-{
+
+static struct mt_systracker_driver mt_systracker_drv = {
 	.driver = {
-		.driver = {
-			.name = "systracker",
-			.bus = &platform_bus_type,
-			.owner = THIS_MODULE,
-			.of_match_table = systracker_of_ids,
-		},
-		.probe = systracker_probe,
-		.remove = systracker_remove,
-		.suspend = systracker_suspend,
-		.resume = systracker_resume,
-	},
+		   .driver = {
+			      .name = "systracker",
+			      .bus = &platform_bus_type,
+			      .owner = THIS_MODULE,
+			      .of_match_table = systracker_of_ids,
+			      },
+		   .probe = systracker_probe,
+		   .remove = systracker_remove,
+		   .suspend = systracker_suspend,
+		   .resume = systracker_resume,
+		   },
 	.device = {
-		.name = "systracker",
-		.id = 0,
-		.dev =
-		{
-		},
-	},
-	.reset_systracker		= NULL,
-	.enable_watchpoint 	= NULL,
-	.disable_watchpoint 	= NULL,
-	.set_watchpoint_address	= NULL,
-	.enable_systracker         	= NULL,
-	.disable_systracker         = NULL,
-	.test_systracker 		= NULL,
-	.systracker_probe		= NULL,
-	.systracker_remove          = NULL,
-	.systracker_suspend         = NULL,
-	.systracker_resume          = NULL,
+		   .name = "systracker",
+		   .id = 0,
+		   .dev = {
+			   },
+		   },
+	.reset_systracker = NULL,
+	.enable_watchpoint = NULL,
+	.disable_watchpoint = NULL,
+	.set_watchpoint_address = NULL,
+	.enable_systracker = NULL,
+	.disable_systracker = NULL,
+	.test_systracker = NULL,
+	.systracker_probe = NULL,
+	.systracker_remove = NULL,
+	.systracker_suspend = NULL,
+	.systracker_resume = NULL,
 };
 
 static int systracker_platform_probe_default(struct platform_device *pdev)
@@ -69,13 +69,11 @@ static int systracker_platform_probe_default(struct platform_device *pdev)
 
 	/* iomap register */
 	BUS_DBG_BASE = of_iomap(pdev->dev.of_node, 0);
-	if(!BUS_DBG_BASE) {
-		printk("can't of_iomap for systracker!!\n");
+	if (!BUS_DBG_BASE) {
+		pr_err("can't of_iomap for systracker!!\n");
 		return -ENOMEM;
 	}
-	else {
-		printk("of_iomap for systracker @ 0x%p\n", BUS_DBG_BASE);
-	}
+	pr_err("of_iomap for systracker @ 0x%p\n", BUS_DBG_BASE);
 
 	/* get irq #  */
 	systracker_irq = irq_of_parse_and_map(pdev->dev.of_node, 0);
@@ -83,18 +81,19 @@ static int systracker_platform_probe_default(struct platform_device *pdev)
 
 #ifdef SYSTRACKER_TEST_SUIT
 	if (!is_systracker_irq_registered) {
-		if (request_irq(systracker_irq, (irq_handler_t)systracker_isr, IRQF_TRIGGER_LOW, "SYSTRACKER", NULL)) {
-			printk(KERN_ERR "SYSTRACKER IRQ LINE NOT AVAILABLE!!\n");
+		if (request_irq
+		    (systracker_irq, (irq_handler_t) systracker_isr, IRQF_TRIGGER_LOW, "SYSTRACKER",
+		     NULL)) {
+			pr_err("SYSTRACKER IRQ LINE NOT AVAILABLE!!\n");
 			return -1;
-		} else {
-			is_systracker_irq_registered = 1;
 		}
+		is_systracker_irq_registered = 1;
 	}
 #endif
 	/* save entry info */
 	save_entry();
 
-	memset(&track_config, sizeof(struct systracker_config_t), 0);
+	memset(&track_config, 0, sizeof(struct systracker_config_t));
 	/* To latch last PC when tracker timeout, we need to enable interrupt mode */
 	track_config.enable_timeout = 1;
 	track_config.enable_slave_err = 1;
@@ -109,48 +108,43 @@ static int systracker_platform_probe_default(struct platform_device *pdev)
 
 int systracker_probe(struct platform_device *pdev)
 {
-	if (mt_systracker_drv.systracker_probe) {
+	if (mt_systracker_drv.systracker_probe)
 		return mt_systracker_drv.systracker_probe(pdev);
-	} else {
+	else
 		return systracker_platform_probe_default(pdev);
-	}
 }
 
 int systracker_remove(struct platform_device *pdev)
 {
-	if (mt_systracker_drv.systracker_remove) {
+	if (mt_systracker_drv.systracker_remove)
 		return mt_systracker_drv.systracker_remove(pdev);
-	}
 	return 0;
 }
 
 int systracker_suspend(struct platform_device *pdev, pm_message_t state)
 {
-	if (mt_systracker_drv.systracker_suspend) {
-		return mt_systracker_drv.systracker_suspend(pdev,state);
-	}
+	if (mt_systracker_drv.systracker_suspend)
+		return mt_systracker_drv.systracker_suspend(pdev, state);
 	return 0;
 }
 
 static int systracker_resume_default(struct platform_device *pdev)
 {
-    if (track_config.state || track_config.enable_wp) {
-        systracker_enable();
-    }
-    return 0;
+	if (track_config.state || track_config.enable_wp)
+		systracker_enable();
+	return 0;
 }
 
 int systracker_resume(struct platform_device *pdev)
 {
-	if (mt_systracker_drv.systracker_resume) {
+	if (mt_systracker_drv.systracker_resume)
 		return mt_systracker_drv.systracker_resume(pdev);
-	} else {
+	else
 		return systracker_resume_default(pdev);
-	}
 }
 
 /* Some chip do not have reg dump, define a weak to avoid build error */
-extern int mt_reg_dump(char *buf) __attribute__((weak));
+extern int mt_reg_dump(char *buf) __attribute__ ((weak));
 
 /*
  * save entry info early
@@ -158,14 +152,15 @@ extern int mt_reg_dump(char *buf) __attribute__((weak));
 void save_entry(void)
 {
 	int i = 0;
-	track_entry.dbg_con =  readl(IOMEM(BUS_DBG_CON));
 
-	for(i = 0; i < BUS_DBG_NUM_TRACKER; i++){
-		track_entry.ar_track_l[i]   = readl(IOMEM(BUS_DBG_AR_TRACK_L(i)));
-		track_entry.ar_track_h[i]   = readl(IOMEM(BUS_DBG_AR_TRACK_H(i)));
+	track_entry.dbg_con = readl(IOMEM(BUS_DBG_CON));
+
+	for (i = 0; i < BUS_DBG_NUM_TRACKER; i++) {
+		track_entry.ar_track_l[i] = readl(IOMEM(BUS_DBG_AR_TRACK_L(i)));
+		track_entry.ar_track_h[i] = readl(IOMEM(BUS_DBG_AR_TRACK_H(i)));
 		track_entry.ar_trans_tid[i] = readl(IOMEM(BUS_DBG_AR_TRANS_TID(i)));
-		track_entry.aw_track_l[i]   = readl(IOMEM(BUS_DBG_AW_TRACK_L(i)));
-		track_entry.aw_track_h[i]   = readl(IOMEM(BUS_DBG_AW_TRACK_H(i)));
+		track_entry.aw_track_l[i] = readl(IOMEM(BUS_DBG_AW_TRACK_L(i)));
+		track_entry.aw_track_h[i] = readl(IOMEM(BUS_DBG_AW_TRACK_H(i)));
 		track_entry.aw_trans_tid[i] = readl(IOMEM(BUS_DBG_AW_TRANS_TID(i)));
 	}
 }
@@ -173,9 +168,8 @@ void save_entry(void)
 #ifdef SYSTRACKER_TEST_SUIT
 void systracker_test_cleanup(void)
 {
-	if (mt_systracker_drv.systracker_test_cleanup) {
+	if (mt_systracker_drv.systracker_test_cleanup)
 		return mt_systracker_drv.systracker_test_cleanup();
-	}
 }
 #endif
 
@@ -191,55 +185,31 @@ static void tracker_print(void)
 	unsigned int entry_burst_length;
 
 	for (i = 0; i < BUS_DBG_NUM_TRACKER; i++) {
-		entry_address       = track_entry.ar_track_l[i];
-		reg_value           = track_entry.ar_track_h[i];
-		entry_valid         = extract_n2mbits(reg_value,19,19);
-		entry_id            = extract_n2mbits(reg_value,7,18);
-		entry_data_size     = extract_n2mbits(reg_value,4,6);
-		entry_burst_length  = extract_n2mbits(reg_value,0,3);
-		entry_tid           = track_entry.ar_trans_tid[i];
+		entry_address = track_entry.ar_track_l[i];
+		reg_value = track_entry.ar_track_h[i];
+		entry_valid = extract_n2mbits(reg_value, 19, 19);
+		entry_id = extract_n2mbits(reg_value, 7, 18);
+		entry_data_size = extract_n2mbits(reg_value, 4, 6);
+		entry_burst_length = extract_n2mbits(reg_value, 0, 3);
+		entry_tid = track_entry.ar_trans_tid[i];
 
-		printk("\
-				read entry = %d, \
-				valid = 0x%x, \
-				tid = 0x%x, \
-				read id = 0x%x, \
-				address = 0x%x, \
-				data_size = 0x%x, \
-				burst_length = 0x%x\n",
-				i,
-				entry_valid,
-				entry_tid,
-				entry_id,
-				entry_address,
-				entry_data_size,
-				entry_burst_length);
+		pr_notice("read entry = %d, valid = 0x%x, tid = 0x%x, read id = 0x%x, address = 0x%x, data_size = 0x%x, burst_length = 0x%x\n",
+			i, entry_valid, entry_tid, entry_id,
+				entry_address, entry_data_size, entry_burst_length);
 	}
 
 	for (i = 0; i < BUS_DBG_NUM_TRACKER; i++) {
-		entry_address       = track_entry.aw_track_l[i];
-		reg_value           = track_entry.aw_track_h[i];
-		entry_valid         = extract_n2mbits(reg_value,19,19);
-		entry_id            = extract_n2mbits(reg_value,7,18);
-		entry_data_size     = extract_n2mbits(reg_value,4,6);
-		entry_burst_length  = extract_n2mbits(reg_value,0,3);
-		entry_tid           = track_entry.aw_trans_tid[i];
+		entry_address = track_entry.aw_track_l[i];
+		reg_value = track_entry.aw_track_h[i];
+		entry_valid = extract_n2mbits(reg_value, 19, 19);
+		entry_id = extract_n2mbits(reg_value, 7, 18);
+		entry_data_size = extract_n2mbits(reg_value, 4, 6);
+		entry_burst_length = extract_n2mbits(reg_value, 0, 3);
+		entry_tid = track_entry.aw_trans_tid[i];
 
-		printk("\
-				write entry = %d, \
-				valid = 0x%x, \
-				tid = 0x%x, \
-				write id = 0x%x, \
-				address = 0x%x, \
-				data_size = 0x%x, \
-				burst_length = 0x%x\n",
-				i,
-				entry_valid,
-				entry_tid,
-				entry_id,
-				entry_address,
-				entry_data_size,
-				entry_burst_length);
+		pr_notice("write entry = %d, valid = 0x%x, tid = 0x%x, write id = 0x%x, address = 0x%x, data_size = 0x%x, burst_length = 0x%x\n",
+			i, entry_valid, entry_tid, entry_id,
+			entry_address, entry_data_size, entry_burst_length);
 	}
 }
 
@@ -253,29 +223,29 @@ irqreturn_t systracker_isr(void)
 #endif
 
 	save_entry();
-	printk("Sys Tracker ISR\n");
+	pr_notice("Sys Tracker ISR\n");
+	pr_notice("in systracker_interface.c\n");
 	con = readl(IOMEM(BUS_DBG_CON));
 	writel(con | BUS_DBG_CON_IRQ_CLR, IOMEM(BUS_DBG_CON));
-	dsb();
+	mb();
 
 	if (con & BUS_DBG_CON_IRQ_WP_STA) {
-		printk("[TRACKER] Watch address: 0x%x was touched\n", track_config.wp_phy_address);
+		pr_notice("[TRACKER] Watch address: 0x%x was touched\n", track_config.wp_phy_address);
 		if (mt_reg_dump) {
-			if (mt_reg_dump(reg_buf) == 0) {
-				printk("%s\n", reg_buf);
-			}
+			if (mt_reg_dump(reg_buf) == 0)
+				pr_notice("%s\n", reg_buf);
 		}
 	}
 
-	if (con & BUS_DBG_CON_IRQ_AR_STA) { 
-		printk("[TRAKER] Read time out trigger\n");
+	if (con & BUS_DBG_CON_IRQ_AR_STA) {
+		pr_notice("[TRAKER] Read time out trigger\n");
 		tracker_print();
 	}
 
 	if (con & BUS_DBG_CON_IRQ_AW_STA) {
-		printk("[TRAKER] Write time out trigger\n");
+		pr_notice("[TRAKER] Write time out trigger\n");
 		tracker_print();
-	} 
+	}
 
 	return IRQ_HANDLED;
 }
@@ -283,66 +253,63 @@ irqreturn_t systracker_isr(void)
 static int systracker_watchpoint_enable_default(void)
 {
 	if (!is_systracker_irq_registered) {
-		if (request_irq(systracker_irq, (irq_handler_t)systracker_isr, IRQF_TRIGGER_LOW, "SYSTRACKER", NULL)) {
-			printk(KERN_ERR "SYSTRACKER IRQ LINE NOT AVAILABLE!!\n");
+		if (request_irq
+		    (systracker_irq, (irq_handler_t) systracker_isr, IRQF_TRIGGER_LOW, "SYSTRACKER",
+		     NULL)) {
+			pr_err("SYSTRACKER IRQ LINE NOT AVAILABLE!!\n");
 			return -1;
-		} else {
-			is_systracker_irq_registered = 1;
 		}
+		is_systracker_irq_registered = 1;
 	}
 
 	track_config.enable_wp = 1;
 	writel(track_config.wp_phy_address, IOMEM(BUS_DBG_WP));
 	writel(0x0000000F, IOMEM(BUS_DBG_WP_MASK));
 	writel(readl(IOMEM(BUS_DBG_CON)) | BUS_DBG_CON_WP_EN, IOMEM(BUS_DBG_CON));
-	printk("track_config.wp_phy_address = 0x%x\n", track_config.wp_phy_address);
-	dsb();
+	pr_notice("track_config.wp_phy_address = 0x%x\n", track_config.wp_phy_address);
+	mb();
 
 	return 0;
 }
 
 int systracker_watchpoint_enable(void)
 {
-	if (mt_systracker_drv.enable_watchpoint) {
+	if (mt_systracker_drv.enable_watchpoint)
 		return mt_systracker_drv.enable_watchpoint();
-	} else {
+	else
 		return systracker_watchpoint_enable_default();
-	}
 }
 
 static int systracker_watchpoint_disable_default(void)
 {
 	track_config.enable_wp = 0;
 	writel(readl(IOMEM(BUS_DBG_CON)) & ~BUS_DBG_CON_WP_EN, IOMEM(BUS_DBG_CON));
-	dsb();
+	mb();
 
 	return 0;
 }
 
 int systracker_watchpoint_disable(void)
 {
-	if (mt_systracker_drv.disable_watchpoint) {
+	if (mt_systracker_drv.disable_watchpoint)
 		return mt_systracker_drv.disable_watchpoint();
-	} else {
+	else
 		return systracker_watchpoint_disable_default();
-	}
 }
 
 static void systracker_reset_default(void)
 {
-	writel(BUS_DBG_CON_DEFAULT_VAL, IOMEM(BUS_DBG_CON));
 	writel(readl(IOMEM(BUS_DBG_CON)) | BUS_DBG_CON_SW_RST, IOMEM(BUS_DBG_CON));
 	writel(readl(IOMEM(BUS_DBG_CON)) | BUS_DBG_CON_IRQ_CLR, IOMEM(BUS_DBG_CON));
-	dsb();
+	mb();
 }
 
 void systracker_reset(void)
 {
-	if (mt_systracker_drv.reset_systracker) {
+	if (mt_systracker_drv.reset_systracker)
 		mt_systracker_drv.reset_systracker();
-	} else {
+	else
 		systracker_reset_default();
-	}
 }
 
 static unsigned int systracker_timeout_value_default(void)
@@ -353,11 +320,10 @@ static unsigned int systracker_timeout_value_default(void)
 
 static unsigned int systracker_timeout_value(void)
 {
-	if (mt_systracker_drv.systracker_timeout_value) {
+	if (mt_systracker_drv.systracker_timeout_value)
 		return mt_systracker_drv.systracker_timeout_value();
-	} else {
+	else
 		return systracker_timeout_value_default();
-	}
 }
 
 static void systracker_enable_default(void)
@@ -370,36 +336,32 @@ static void systracker_enable_default(void)
 
 	track_config.state = 1;
 	con = BUS_DBG_CON_BUS_DBG_EN | BUS_DBG_CON_BUS_OT_EN;
-	if (track_config.enable_timeout) {
+	if (track_config.enable_timeout)
 		con |= BUS_DBG_CON_TIMEOUT_EN;
-	}
 
-	if (track_config.enable_slave_err) {
+	if (track_config.enable_slave_err)
 		con |= BUS_DBG_CON_SLV_ERR_EN;
-	}
 
-	if (track_config.enable_irq) {
+	if (track_config.enable_irq)
 		con |= BUS_DBG_CON_IRQ_EN;
-		/* for safty, BUS_DBG_CON_IRQ_WP_EN is set later...
+		/* for safety, BUS_DBG_CON_IRQ_WP_EN is set later...
 		   K2 encouter many strange behaviors when set BUS_DBG_CON_IRQ_WP_EN at the same time */
 		con &= ~BUS_DBG_CON_IRQ_WP_EN;
-	}
 
 	con |= BUS_DBG_CON_HALT_ON_EN;
 	writel(con, IOMEM(BUS_DBG_CON));
-	dsb();
+	mb();
 	con |= BUS_DBG_CON_IRQ_WP_EN;
 	writel(con, IOMEM(BUS_DBG_CON));
-	dsb();
+	mb();
 }
 
 void systracker_enable(void)
 {
-	if (mt_systracker_drv.enable_systracker) {
+	if (mt_systracker_drv.enable_systracker)
 		mt_systracker_drv.enable_systracker();
-	} else {
+	else
 		systracker_enable_default();
-	}
 }
 
 void enable_systracker(void)
@@ -411,38 +373,35 @@ static void systracker_disable_default(void)
 {
 	track_config.state = 0;
 	writel(readl(IOMEM(BUS_DBG_CON)) & ~BUS_DBG_CON_BUS_DBG_EN, IOMEM(BUS_DBG_CON));
-	dsb();
+	mb();
 
-	return;
 }
 
 void systracker_disable(void)
 {
-	if (mt_systracker_drv.disable_systracker) {
+	if (mt_systracker_drv.disable_systracker)
 		mt_systracker_drv.disable_systracker();
-	} else {
+	else
 		systracker_disable_default();
-	}
 }
 
 int systracker_hook_fault(void)
 {
-	if (mt_systracker_drv.systracker_hook_fault) {
+	if (mt_systracker_drv.systracker_hook_fault)
 		return mt_systracker_drv.systracker_hook_fault();
-	} else {
-		pr_warn("mt_systracker_drv.systracker_hook_fault is NULL");
-		return -1;
-	}
+
+	pr_warn("mt_systracker_drv.systracker_hook_fault is NULL");
+	return -1;
 }
 
 int systracker_test_init(void)
 {
-	if (mt_systracker_drv.systracker_test_init) {
+	if (mt_systracker_drv.systracker_test_init)
 		return mt_systracker_drv.systracker_test_init();
-	} else {
-		pr_warn("mt_systracker_drv.systracker_test_init is NULL");
-		return -1;
-	}
+
+	pr_warn("mt_systracker_drv.systracker_test_init is NULL");
+	return -1;
+
 }
 
 struct mt_systracker_driver *get_mt_systracker_drv(void)
@@ -464,7 +423,9 @@ int tracker_dump(char *buf)
 	unsigned int entry_burst_length;
 
 
-	//if(is_systracker_device_registered)
+	/*
+	if(is_systracker_device_registered)
+	*/
 	{
 		/* Get tracker info and save to buf */
 
@@ -484,50 +445,27 @@ int tracker_dump(char *buf)
 		 */
 
 #ifdef TRACKER_DEBUG
-		printk("Sys Tracker Dump\n");
+		pr_debug("Sys Tracker Dump\n");
 #endif
 
 		for (i = 0; i < BUS_DBG_NUM_TRACKER; i++) {
-			entry_address       = track_entry.ar_track_l[i];
-			reg_value           = track_entry.ar_track_h[i];
-			entry_valid         = extract_n2mbits(reg_value,19,19);
-			entry_id            = extract_n2mbits(reg_value,7,18);
-			entry_data_size     = extract_n2mbits(reg_value,4,6);
-			entry_burst_length  = extract_n2mbits(reg_value,0,3);
-			entry_tid           = track_entry.ar_trans_tid[i];
+			entry_address = track_entry.ar_track_l[i];
+			reg_value = track_entry.ar_track_h[i];
+			entry_valid = extract_n2mbits(reg_value, 19, 19);
+			entry_id = extract_n2mbits(reg_value, 7, 18);
+			entry_data_size = extract_n2mbits(reg_value, 4, 6);
+			entry_burst_length = extract_n2mbits(reg_value, 0, 3);
+			entry_tid = track_entry.ar_trans_tid[i];
 
-			ptr += sprintf(ptr, " \
-					read entry = %d, \
-					valid = 0x%x, \
-					tid = 0x%x, \
-					read id = 0x%x, \
-					address = 0x%x, \
-					data_size = 0x%x, \
-					burst_length = 0x%x\n",
-					i,
-					entry_valid,
-					entry_tid,
-					entry_id,
-					entry_address,
-					entry_data_size,
-					entry_burst_length);
+			ptr += sprintf(ptr,
+				"read entry = %d, valid = 0x%x, tid = 0x%x, read id = 0x%x, address = 0x%x, data_size = 0x%x, burst_length = 0x%x\n",
+				i, entry_valid, entry_tid, entry_id,
+				entry_address, entry_data_size, entry_burst_length);
 
 #ifdef TRACKER_DEBUG
-			printk("\
-					read entry = %d, \
-					valid = 0x%x, \
-					tid = 0x%x, \
-					read id = 0x%x, \
-					address = 0x%x, \
-					data_size = 0x%x, \
-					burst_length = 0x%x\n",
-					i,
-					entry_valid,
-					entry_tid,
-					entry_id,
-					entry_address,
-					entry_data_size,
-					entry_burst_length);
+			pr_debug("read entry = %d, valid = 0x%x, tid = 0x%x, read id = 0x%x, address = 0x%x, data_size = 0x%x, burst_length = 0x%x\n",
+				i, entry_valid, entry_tid, entry_id,
+				entry_address, entry_data_size, entry_burst_length);
 #endif
 		}
 
@@ -547,46 +485,23 @@ int tracker_dump(char *buf)
 		 */
 
 		for (i = 0; i < BUS_DBG_NUM_TRACKER; i++) {
-			entry_address       = track_entry.aw_track_l[i];
-			reg_value           = track_entry.aw_track_h[i];
-			entry_valid         = extract_n2mbits(reg_value,19,19);
-			entry_id            = extract_n2mbits(reg_value,7,18);
-			entry_data_size     = extract_n2mbits(reg_value,4,6);
-			entry_burst_length  = extract_n2mbits(reg_value,0,3);
-			entry_tid           = track_entry.aw_trans_tid[i];
+			entry_address = track_entry.aw_track_l[i];
+			reg_value = track_entry.aw_track_h[i];
+			entry_valid = extract_n2mbits(reg_value, 19, 19);
+			entry_id = extract_n2mbits(reg_value, 7, 18);
+			entry_data_size = extract_n2mbits(reg_value, 4, 6);
+			entry_burst_length = extract_n2mbits(reg_value, 0, 3);
+			entry_tid = track_entry.aw_trans_tid[i];
 
-			ptr += sprintf(ptr, " \
-					write entry = %d, \
-					valid = 0x%x, \
-					tid = 0x%x, \
-					write id = 0x%x, \
-					address = 0x%x, \
-					data_size = 0x%x, \
-					burst_length = 0x%x\n",
-					i,
-					entry_valid,
-					entry_tid,
-					entry_id,
-					entry_address,
-					entry_data_size,
-					entry_burst_length);
+			ptr += sprintf(ptr,
+				"write entry = %d, valid = 0x%x, tid = 0x%x, write id = 0x%x, address = 0x%x, data_size = 0x%x, burst_length = 0x%x\n",
+				i, entry_valid, entry_tid, entry_id, entry_address,
+				entry_data_size, entry_burst_length);
 
 #ifdef TRACKER_DEBUG
-			printk("\
-					write entry = %d, \
-					valid = 0x%x, \
-					tid = 0x%x, \
-					write id = 0x%x, \
-					address = 0x%x, \
-					data_size = 0x%x, \
-					burst_length = 0x%x\n",
-					i,
-					entry_valid,
-					entry_tid,
-					entry_id,
-					entry_address,
-					entry_data_size,
-					entry_burst_length);
+			pr_debug("write entry = %d, valid = 0x%x, tid = 0x%x, write id = 0x%x, address = 0x%x, data_size = 0x%x, burst_length = 0x%x\n",
+				i, entry_valid, entry_tid, entry_id, entry_address,
+				entry_data_size, entry_burst_length);
 #endif
 		}
 
@@ -601,20 +516,19 @@ static ssize_t tracker_run_show(struct device_driver *driver, char *buf)
 	return snprintf(buf, PAGE_SIZE, "%x\n", readl(IOMEM(BUS_DBG_CON)));
 }
 
-static ssize_t tracker_run_store(struct device_driver * driver, const char *buf, size_t count)
+static ssize_t tracker_run_store(struct device_driver *driver, const char *buf, size_t count)
 {
 	unsigned int value;
 
-	if (unlikely(sscanf(buf, "%u", &value) != 1))
+	if (unlikely(kstrtou32(buf, 10, &value) != 1))
 		return -EINVAL;
 
-	if (value == 1) {
+	if (value == 1)
 		systracker_enable();
-	} else if(value == 0) {
+	else if (value == 0)
 		systracker_disable();
-	} else {
+	else
 		return -EINVAL;
-	}
 
 	return count;
 }
@@ -626,20 +540,19 @@ static ssize_t enable_wp_show(struct device_driver *driver, char *buf)
 	return snprintf(buf, PAGE_SIZE, "%x\n", track_config.enable_wp);
 }
 
-static ssize_t enable_wp_store(struct device_driver * driver, const char *buf, size_t count)
+static ssize_t enable_wp_store(struct device_driver *driver, const char *buf, size_t count)
 {
 	unsigned int value;
 
-	if (unlikely(sscanf(buf, "%u", &value) != 1))
+	if (unlikely(kstrtou32(buf, 10, &value) != 1))
 		return -EINVAL;
 
-	if (value == 1) {
+	if (value == 1)
 		systracker_watchpoint_enable();
-	} else if(value == 0) {
+	else if (value == 0)
 		systracker_watchpoint_disable();
-	} else {
+	else
 		return -EINVAL;
-	}
 
 	return count;
 }
@@ -653,21 +566,22 @@ static ssize_t set_wp_address_show(struct device_driver *driver, char *buf)
 
 int systracker_set_watchpoint_addr(unsigned int addr)
 {
-	if (mt_systracker_drv.set_watchpoint_address) {
+	if (mt_systracker_drv.set_watchpoint_address)
 		return mt_systracker_drv.set_watchpoint_address(addr);
-	} else {
-		track_config.wp_phy_address = addr;
-	}
+
+	track_config.wp_phy_address = addr;
 
 	return 0;
 }
 
-static ssize_t set_wp_address_store(struct device_driver * driver, const char *buf, size_t count)
+static ssize_t set_wp_address_store(struct device_driver *driver, const char *buf, size_t count)
 {
 	unsigned int value;
 
-	sscanf(buf, "0x%x", &value);
-	printk("watch address:0x%x\n",value);
+	if (unlikely(kstrtou32(buf, 10, &value) != 1))
+		return -EINVAL;
+
+	pr_notice("watch address:0x%x\n", value);
 	systracker_set_watchpoint_addr(value);
 
 	return count;
@@ -678,23 +592,24 @@ DRIVER_ATTR(set_wp_address, 0644, set_wp_address_show, set_wp_address_store);
 static ssize_t tracker_entry_dump_show(struct device_driver *driver, char *buf)
 {
 	int ret = tracker_dump(buf);
+
 	if (ret == -1)
-		printk(KERN_CRIT "Dump error in %s, %d\n", __func__, __LINE__);
+		pr_crit("Dump error in %s, %d\n", __func__, __LINE__);
 
-	///*FOR test*/
-	//test_systracker();
+	/* FOR test
+	test_systracker();
+	*/
 
-	return strlen(buf);;
+	return strlen(buf);
 }
 
 
-extern void wdt_arch_reset(char mode);
 static ssize_t tracker_swtrst_show(struct device_driver *driver, char *buf)
 {
 	return 0;
 }
 
-static ssize_t tracker_swtrst_store(struct device_driver * driver, const char *buf, size_t count)
+static ssize_t tracker_swtrst_store(struct device_driver *driver, const char *buf, size_t count)
 {
 	writel(readl(IOMEM(BUS_DBG_CON)) | BUS_DBG_CON_SW_RST, IOMEM(BUS_DBG_CON));
 	return count;
@@ -704,11 +619,10 @@ DRIVER_ATTR(tracker_swtrst, 0664, tracker_swtrst_show, tracker_swtrst_store);
 #ifdef SYSTRACKER_TEST_SUIT
 void systracker_wp_test(void)
 {
-	if (mt_systracker_drv.systracker_wp_test) {
+	if (mt_systracker_drv.systracker_wp_test)
 		mt_systracker_drv.systracker_wp_test();
-	} else {
+	else
 		pr_notice("mt_systracker_drv.systracker_wp_test is NULL");
-	}
 }
 
 /* this function expects */
@@ -716,22 +630,20 @@ void systracker_read_timeout_test(void)
 {
 	pr_notice("we are going to have read timeout\n");
 
-	if (mt_systracker_drv.systracker_read_timeout_test) {
+	if (mt_systracker_drv.systracker_read_timeout_test)
 		mt_systracker_drv.systracker_read_timeout_test();
-	} else {
+	else
 		pr_notice("mt_systracker_drv.systracker_read_timeout_test is NULL");
-	}
 }
 
 void systracker_write_timeout_test(void)
 {
 	pr_notice("we are going to have write timeout\n");
 
-	if (mt_systracker_drv.systracker_write_timeout_test) {
+	if (mt_systracker_drv.systracker_write_timeout_test)
 		mt_systracker_drv.systracker_write_timeout_test();
-	} else {
+	else
 		pr_notice("mt_systracker_drv.systracker_write_timeout_test is NULL");
-	}
 }
 
 void systracker_timeout_withrecord_test(void)
@@ -739,11 +651,10 @@ void systracker_timeout_withrecord_test(void)
 	pr_notice("we are going to have read timeout, and then wdt happens\n");
 	pr_notice("Please check if there is related backtrace info in aee\n");
 
-	if (mt_systracker_drv.systracker_withrecord_test) {
+	if (mt_systracker_drv.systracker_withrecord_test)
 		mt_systracker_drv.systracker_withrecord_test();
-	} else {
+	else
 		pr_notice("mt_systracker_drv.systracker_withrecord_test is NULL");
-	}
 }
 
 void systracker_notimeout_test(void)
@@ -751,11 +662,10 @@ void systracker_notimeout_test(void)
 	pr_notice("should hang forever from now on, never come back...\n");
 	pr_notice("ICE should not connect anymore\n");
 
-	if (mt_systracker_drv.systracker_notimeout_test) {
+	if (mt_systracker_drv.systracker_notimeout_test)
 		mt_systracker_drv.systracker_notimeout_test();
-	} else {
+	else
 		pr_notice("mt_systracker_drv.systracker_notimeout_test is NULL");
-	}
 }
 
 static ssize_t test_suit_show(struct device_driver *driver, char *buf)
@@ -765,19 +675,19 @@ static ssize_t test_suit_show(struct device_driver *driver, char *buf)
 			"2.Systracker watchpoint test\n"
 			"3.Systracker read timeout test\n"
 			"4.Systracker write timeout test\n"
-			"5.Systracker timeout with record test\n"
-			"6.Systracker no timeout test\n"
-		       );
+			"5.Systracker timeout with record test\n" "6.Systracker no timeout test\n");
 }
 
 static ssize_t test_suit_store(struct device_driver *driver, const char *buf, size_t count)
 {
 	char *p = (char *)buf;
-	unsigned int num;
+	unsigned long int num;
+	ssize_t ret;
 
-	num = simple_strtoul(p, &p, 10);
-	switch(num){
-		/* Test Systracker Function */
+	ret = kstrtoul(p, 10, &num);
+	if (ret == 0) {
+		switch (num) {
+			/* Test Systracker Function */
 		case 1:
 			return tracker_entry_dump_show(driver, p);
 		case 2:
@@ -797,6 +707,7 @@ static ssize_t test_suit_store(struct device_driver *driver, const char *buf, si
 			break;
 		default:
 			break;
+		}
 	}
 
 	return count;
@@ -805,7 +716,7 @@ static ssize_t test_suit_store(struct device_driver *driver, const char *buf, si
 DRIVER_ATTR(test_suit, 0664, test_suit_show, test_suit_store);
 #endif
 
-static ssize_t tracker_entry_dump_store(struct device_driver * driver, const char *buf, size_t count)
+static ssize_t tracker_entry_dump_store(struct device_driver *driver, const char *buf, size_t count)
 {
 	return count;
 }
@@ -815,14 +726,14 @@ DRIVER_ATTR(tracker_entry_dump, 0664, tracker_entry_dump_show, tracker_entry_dum
 static ssize_t tracker_last_status_show(struct device_driver *driver, char *buf)
 {
 
-	if(track_entry.dbg_con & (BUS_DBG_CON_IRQ_AR_STA | BUS_DBG_CON_IRQ_AW_STA)){
+	if (track_entry.dbg_con & (BUS_DBG_CON_IRQ_AR_STA | BUS_DBG_CON_IRQ_AW_STA))
 		return snprintf(buf, PAGE_SIZE, "1\n");
-	} else {
+	else
 		return snprintf(buf, PAGE_SIZE, "0\n");
-	}
 }
 
-static ssize_t tracker_last_status_store(struct device_driver * driver, const char *buf, size_t count)
+static ssize_t tracker_last_status_store(struct device_driver *driver, const char *buf,
+					 size_t count)
 {
 	return count;
 }
@@ -835,33 +746,32 @@ DRIVER_ATTR(tracker_last_status, 0664, tracker_last_status_show, tracker_last_st
 static int __init systracker_init(void)
 {
 	int err;
-	int ret=0; 
+	int ret = 0;
 
 #ifdef SYSTRACKER_TEST_SUIT
 	systracker_test_init();
 #endif
 	err = platform_driver_register(&mt_systracker_drv.driver);
-	if (err) {
+	if (err)
 		return err;
-	}
 
 	/* Create sysfs entry */
-	ret  = driver_create_file(&mt_systracker_drv.driver.driver , &driver_attr_tracker_entry_dump);
-	ret |= driver_create_file(&mt_systracker_drv.driver.driver , &driver_attr_tracker_run);
-	ret |= driver_create_file(&mt_systracker_drv.driver.driver , &driver_attr_enable_wp);
-	ret |= driver_create_file(&mt_systracker_drv.driver.driver , &driver_attr_set_wp_address);
-	ret |= driver_create_file(&mt_systracker_drv.driver.driver , &driver_attr_tracker_swtrst);
-	ret |= driver_create_file(&mt_systracker_drv.driver.driver , &driver_attr_tracker_last_status);
+	ret = driver_create_file(&mt_systracker_drv.driver.driver, &driver_attr_tracker_entry_dump);
+	ret |= driver_create_file(&mt_systracker_drv.driver.driver, &driver_attr_tracker_run);
+	ret |= driver_create_file(&mt_systracker_drv.driver.driver, &driver_attr_enable_wp);
+	ret |= driver_create_file(&mt_systracker_drv.driver.driver, &driver_attr_set_wp_address);
+	ret |= driver_create_file(&mt_systracker_drv.driver.driver, &driver_attr_tracker_swtrst);
+	ret |=
+	    driver_create_file(&mt_systracker_drv.driver.driver, &driver_attr_tracker_last_status);
 #ifdef SYSTRACKER_TEST_SUIT
-	ret |= driver_create_file(&mt_systracker_drv.driver.driver , &driver_attr_test_suit);
+	ret |= driver_create_file(&mt_systracker_drv.driver.driver, &driver_attr_test_suit);
 #endif
-	if (ret) {
+	if (ret)
 		pr_err("Fail to create systracker_drv sysfs files");
-	}
 
 	systracker_hook_fault();
 
-	printk(KERN_ALERT "systracker init done\n");
+	pr_alert("systracker init done\n");
 
 	return 0;
 }

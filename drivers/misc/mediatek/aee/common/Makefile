@@ -1,4 +1,6 @@
-include $(srctree)/drivers/misc/mediatek/Makefile.custom
+#include $(srctree)/drivers/misc/mediatek/Makefile.custom
+
+subdir-ccflags-y += -Idrivers/misc/mediatek/mtprof/
 
 obj-y	+= aee.o
 aee-y	:=dummy.o

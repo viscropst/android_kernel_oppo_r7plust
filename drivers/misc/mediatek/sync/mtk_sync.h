@@ -27,11 +27,7 @@
 
 #include <linux/version.h>
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
-#include <linux/sw_sync.h>
-#else
 #include <../drivers/staging/android/sw_sync.h>
-#endif	/* (LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)) */
 
 /*
  * sync_timeline, sync_fence data structure
@@ -63,7 +59,7 @@ struct sw_sync_timeline *timeline_create(const char *name);
  *
  * The timeline_destroy() function releases a sync object.
  * The remaining active points would be put into signaled list,
- * and their statuses are set to ¡VENOENT.
+ * and their statuses are set to VENOENT.
  */
 void timeline_destroy(struct sw_sync_timeline *obj);
 
@@ -102,18 +98,6 @@ int fence_create(struct sw_sync_timeline *obj, struct fence_data *data);
  * On success, the newly created fd is returned; Otherwise, a -errno is returned.
  */
 int fence_merge(char *const name, int fd1, int fd2);
-
-/**
- * fence_wait() - wait for a fence
- * @fence:      fence pointer to a fence obj
- * @timeout:    how much time we wait at most
- *
- * The fence_wait() function waits for up to @timeout milliseconds
- * for the fence to signal.
- * A timeout of TIMEOUT_NEVER may be used to indicate that
- * the call should wait indefinitely for the fence to signal.
- */
-inline int fence_wait(struct sync_fence *fence, int timeout);
 
 #endif	/* __KERNEL __ */
 

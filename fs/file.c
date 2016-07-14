@@ -23,11 +23,12 @@
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
 
-#define FD_OVER_CHECK
-
 int sysctl_nr_open __read_mostly = 1024*1024;
 int sysctl_nr_open_min = BITS_PER_LONG;
-int sysctl_nr_open_max = 1024 * 1024; /* raised later */
+/* our max() is unusable in constant expressions ;-/ */
+#define __const_max(x, y) ((x) < (y) ? (x) : (y))
+int sysctl_nr_open_max = __const_max(INT_MAX, ~(size_t)0/sizeof(void *)) &
+			 -BITS_PER_LONG;
 
 static void *alloc_fdmem(size_t size)
 {
@@ -43,15 +44,10 @@ static void *alloc_fdmem(size_t size)
 	return vmalloc(size);
 }
 
-static void free_fdmem(void *ptr)
-{
-	is_vmalloc_addr(ptr) ? vfree(ptr) : kfree(ptr);
-}
-
 static void __free_fdtable(struct fdtable *fdt)
 {
-	free_fdmem(fdt->fd);
-	free_fdmem(fdt->open_fds);
+	kvfree(fdt->fd);
+	kvfree(fdt->open_fds);
 	kfree(fdt);
 }
 
@@ -129,7 +125,7 @@ static struct fdtable * alloc_fdtable(unsigned int nr)
 	return fdt;
 
 out_arr:
-	free_fdmem(fdt->fd);
+	kvfree(fdt->fd);
 out_fdt:
 	kfree(fdt);
 out:
@@ -350,21 +346,16 @@ out:
 	return NULL;
 }
 
-static void close_files(struct files_struct * files)
+static struct fdtable *close_files(struct files_struct * files)
 {
-	int i, j;
-	struct fdtable *fdt;
-
-	j = 0;
-
 	/*
 	 * It is safe to dereference the fd table without RCU or
 	 * ->file_lock because this is the last reference to the
-	 * files structure.  But use RCU to shut RCU-lockdep up.
+	 * files structure.
 	 */
-	rcu_read_lock();
-	fdt = files_fdtable(files);
-	rcu_read_unlock();
+	struct fdtable *fdt = rcu_dereference_raw(files->fdt);
+	int i, j = 0;
+
 	for (;;) {
 		unsigned long set;
 		i = j * BITS_PER_LONG;
@@ -376,13 +367,15 @@ static void close_files(struct files_struct * files)
 				struct file * file = xchg(&fdt->fd[i], NULL);
 				if (file) {
 					filp_close(file, files);
-					cond_resched();
+					cond_resched_rcu_qs();
 				}
 			}
 			i++;
 			set >>= 1;
 		}
 	}
+
+	return fdt;
 }
 
 struct files_struct *get_files_struct(struct task_struct *task)
@@ -400,14 +393,9 @@ struct files_struct *get_files_struct(struct task_struct *task)
 
 void put_files_struct(struct files_struct *files)
 {
-	struct fdtable *fdt;
-
 	if (atomic_dec_and_test(&files->count)) {
-		close_files(files);
-		/* not really needed, since nobody can see us */
-		rcu_read_lock();
-		fdt = files_fdtable(files);
-		rcu_read_unlock();
+		struct fdtable *fdt = close_files(files);
+
 		/* free the arrays if they are not embedded */
 		if (fdt != &files->fdtab)
 			__free_fdtable(fdt);
@@ -439,12 +427,6 @@ void exit_files(struct task_struct *tsk)
 	}
 }
 
-void __init files_defer_init(void)
-{
-	sysctl_nr_open_max = min((size_t)INT_MAX, ~(size_t)0/sizeof(void *)) &
-			     -BITS_PER_LONG;
-}
-
 struct files_struct init_files = {
 	.count		= ATOMIC_INIT(1),
 	.fdt		= &init_files.fdtab,
@@ -459,12 +441,13 @@ struct files_struct init_files = {
 
 #ifdef FD_OVER_CHECK
 #define FD_CHECK_NAME_SIZE 256
-// Declare a radix tree to construct fd set tree
+/* Declare a radix tree to construct fd set tree */
 static RADIX_TREE(over_fd_tree, GFP_KERNEL);
 static LIST_HEAD(fd_listhead);
 static DEFINE_MUTEX(over_fd_mutex);
-struct over_fd_entry
-{
+static int dump_current_open_files;
+
+struct over_fd_entry {
 	int num_of_fd;
 	char name[FD_CHECK_NAME_SIZE];
 	int hash;
@@ -474,66 +457,63 @@ struct over_fd_entry
 /*
 * Get File Name from FD value
 */
-long get_file_name_from_fd(struct files_struct *files, int fd, int procid, struct over_fd_entry *res_name)
+static long get_file_name_from_fd(struct files_struct *files, int fd, int procid, struct over_fd_entry *res_name)
 {
-	char *tmp; 
+	char *tmp;
 	char *pathname;
-	struct file *file; 
-	struct path path;  
-	spin_lock(&files->file_lock); 
+	struct file *file;
+	struct path path;
+
+	spin_lock(&files->file_lock);
 	file = fget(fd);
-	if (!file) { 
-        spin_unlock(&files->file_lock);     
-        return (long)NULL;
-	}  
+	if (!file) {
+		spin_unlock(&files->file_lock);
+		return 0;
+	}
 	path_get(&file->f_path);
 	path = file->f_path;
 	fput(file);
 	spin_unlock(&files->file_lock);
-	tmp = (char *)__get_free_page(GFP_TEMPORARY);  
-	if (!tmp) {     
-        return (long)NULL;
-	}  
-	pathname = d_path(&path, tmp, PAGE_SIZE); 
-	
-	path_put(&path); 
-	if (IS_ERR(pathname)) 
-	{     
-        free_page((unsigned long)tmp);     
-	    return PTR_ERR(pathname); 
-	}  /* do something here with pathname */  
-	if(pathname!=NULL)
-	{
-	    strncpy(res_name->name, pathname, FD_CHECK_NAME_SIZE - 1);
-	}
+	tmp = (char *)__get_free_page(GFP_TEMPORARY);
+	if (!tmp)
+		return 0;
+
+	pathname = d_path(&path, tmp, PAGE_SIZE);
+	path_put(&path);
+
+	if (IS_ERR(pathname)) {
+		free_page((unsigned long)tmp);
+		return PTR_ERR(pathname);
+	}  /* do something here with pathname */
+
+	if (pathname != NULL)
+		strncpy(res_name->name, pathname, FD_CHECK_NAME_SIZE - 1);
+
 	free_page((unsigned long)tmp);
 	return 1;
 }
 
-unsigned int get_hash(char *name)
+static unsigned int get_hash(char *name)
 {
-    return full_name_hash(name, strlen(name));
+	return full_name_hash(name, strlen(name));
 }
 
-static struct over_fd_entry* fd_lookup(unsigned int hash)
+static struct over_fd_entry *fd_lookup(unsigned int hash)
 {
-    return radix_tree_lookup(&over_fd_tree, hash);
+	return radix_tree_lookup(&over_fd_tree, hash);
 }
 
 static void fd_insert(struct over_fd_entry *entry)
-{	
+{
 	unsigned int hash = get_hash(entry->name);
 	struct over_fd_entry *find_entry = fd_lookup(hash);
-	
-	if(!find_entry)	// Can't find the element, just add the element
-	{
+
+	if (!find_entry) {	/* Can't find the element, just add the element */
 		entry->num_of_fd = 1;
-		entry->hash = hash;		
+		entry->hash = hash;
 		list_add_tail(&entry->fd_link, &fd_listhead);
 		radix_tree_insert(&over_fd_tree, hash, (void *)entry);
-	}
-	else	// Cover the original element
-	{
+	} else {	/* Cover the original element */
 		find_entry->num_of_fd = find_entry->num_of_fd+1;
 		kfree(entry);
 	}
@@ -546,46 +526,50 @@ static void fd_delete(unsigned int hash)
 
 void fd_show_open_files(pid_t pid, struct files_struct *files, struct fdtable *fdt)
 {
-    int i=0;
+	int i = 0;
 	struct over_fd_entry *lentry;
 	long result;
 	int num_of_entry;
 	int sum_fds_of_pid = 0;
-    
-    mutex_lock(&over_fd_mutex);
-    //printk(KERN_ERR "(PID:%d)Max FD Number:%d", current->pid, fdt->max_fds);
-    for(i=0; i<fdt->max_fds; i++) {
-        struct over_fd_entry *entry = (struct over_fd_entry*)kzalloc(sizeof(struct over_fd_entry), GFP_KERNEL);
-    	if(!entry) {
-    		pr_debug("[FD_LEAK](PID:%d)Empty FD:%d", pid, i);
-    	}
-    	else {
-    		memset(entry->name, 0, sizeof entry->name);
-    		result = get_file_name_from_fd(files, i, pid, entry);
-    		if(result==1) {	
-    	    	fd_insert(entry);
-    	    	sum_fds_of_pid++;
-    		}
-    	}
-    }
-    for(;;) {
-    	if(list_empty(&fd_listhead)) {
-        	break;
-    	}
-    	lentry = list_entry((&fd_listhead)->next, struct over_fd_entry, fd_link);
-    	num_of_entry = lentry->num_of_fd;
-    	if(lentry != NULL && lentry->name!=NULL)
-    		pr_debug("[FD_LEAK]OverAllocFDError(PID:%d fileName:%s Num:%d)\n", pid, lentry->name, num_of_entry);
-    	else
-    		pr_debug("[FD_LEAK]OverAllocFDError(PID:%d fileName:%s Num:%d)\n", pid, "NULL", num_of_entry);
-    	list_del((&fd_listhead)->next);
-    	fd_delete(lentry->hash);
-    	kfree(lentry);
-    }
-    if(sum_fds_of_pid) {
-        pr_debug("[FD_LEAK]OverAllocFDError(PID:%d totalFDs:%d)\n", pid, sum_fds_of_pid);    
-    }
-    mutex_unlock(&over_fd_mutex);
+
+	mutex_lock(&over_fd_mutex);
+	/* pr_err("(PID:%d)Max FD Number:%d", current->pid, fdt->max_fds);*/
+	for (i = 0; i < fdt->max_fds; i++) {
+		struct over_fd_entry *entry = kzalloc(sizeof(struct over_fd_entry), GFP_KERNEL);
+
+		if (entry) {
+			memset(entry->name, 0, sizeof(entry->name));
+			result = get_file_name_from_fd(files, i, pid, entry);
+			if (result == 1) {
+				fd_insert(entry);
+				sum_fds_of_pid++;
+			}
+		}
+	}
+
+	for (; ;) {
+		if (list_empty(&fd_listhead))
+			break;
+
+		lentry = list_entry((&fd_listhead)->next, struct over_fd_entry, fd_link);
+		if (lentry != NULL) {
+			num_of_entry = lentry->num_of_fd;
+			if (lentry->name != NULL)
+				pr_err("[FDLEAK]OverAllocFDError(PID:%d fileName:%s Num:%d)\n",
+						pid, lentry->name, num_of_entry);
+			else
+				pr_err("[FDLEAK]OverAllocFDError(PID:%d fileName:%s Num:%d)\n",
+						pid, "NULL", num_of_entry);
+			list_del((&fd_listhead)->next);
+			fd_delete(lentry->hash);
+			kfree(lentry);
+		}
+	}
+
+	if (sum_fds_of_pid)
+		pr_err("[FDLEAK]OverAllocFDError(PID:%d totalFDs:%d)\n", pid, sum_fds_of_pid);
+
+	mutex_unlock(&over_fd_mutex);
 }
 #endif
 
@@ -639,7 +623,7 @@ repeat:
 	error = fd;
 #if 1
 	/* Sanity check */
-	if (rcu_dereference_raw(fdt->fd[fd]) != NULL) {
+	if (rcu_access_pointer(fdt->fd[fd]) != NULL) {
 		printk(KERN_WARNING "alloc_fd: slot %d not NULL!\n", fd);
 		rcu_assign_pointer(fdt->fd[fd], NULL);
 	}
@@ -648,14 +632,14 @@ repeat:
 out:
 	spin_unlock(&files->file_lock);
 #ifdef FD_OVER_CHECK
-	if(error == -EMFILE) {
-	    static int dump_current_open_files = 0;
-	    if(!dump_current_open_files && 
-	        strcmp(current->comm, "Backbone")) { /*add Backbone into FD white list for skype*/
-	        dump_current_open_files = 0x1;
-	        pr_debug("[FD_LEAK](PID:%d)fd over RLIMIT_NOFILE:%ld", current->pid, rlimit(RLIMIT_NOFILE));
-	        fd_show_open_files(current->pid, files, fdt);
-        }
+	if (error == -EMFILE && !dump_current_open_files) {
+		/*add Backbone into FD white list for skype*/
+		/*if (strcmp(current->comm, "Backbone") != 0) {*/
+		dump_current_open_files = 0x1;
+		pr_err("[FDLEAK][%d:%s]fd over RLIMIT_NOFILE:%ld\n",
+			current->pid, current->comm, rlimit(RLIMIT_NOFILE));
+		fd_show_open_files(current->pid, files, fdt);
+		/*}*/
 	}
 #endif
 	return error;
@@ -790,16 +774,16 @@ void do_close_on_exec(struct files_struct *files)
 	spin_unlock(&files->file_lock);
 }
 
-struct file *fget(unsigned int fd)
+static struct file *__fget(unsigned int fd, fmode_t mask)
 {
-	struct file *file;
 	struct files_struct *files = current->files;
+	struct file *file;
 
 	rcu_read_lock();
 	file = fcheck_files(files, fd);
 	if (file) {
 		/* File object ref couldn't be taken */
-		if (file->f_mode & FMODE_PATH ||
+		if ((file->f_mode & mask) ||
 		    !atomic_long_inc_not_zero(&file->f_count))
 			file = NULL;
 	}
@@ -808,25 +792,16 @@ struct file *fget(unsigned int fd)
 	return file;
 }
 
+struct file *fget(unsigned int fd)
+{
+	return __fget(fd, FMODE_PATH);
+}
 EXPORT_SYMBOL(fget);
 
 struct file *fget_raw(unsigned int fd)
 {
-	struct file *file;
-	struct files_struct *files = current->files;
-
-	rcu_read_lock();
-	file = fcheck_files(files, fd);
-	if (file) {
-		/* File object ref couldn't be taken */
-		if (!atomic_long_inc_not_zero(&file->f_count))
-			file = NULL;
-	}
-	rcu_read_unlock();
-
-	return file;
+	return __fget(fd, 0);
 }
-
 EXPORT_SYMBOL(fget_raw);
 
 /*
@@ -845,57 +820,53 @@ EXPORT_SYMBOL(fget_raw);
  * The fput_needed flag returned by fget_light should be passed to the
  * corresponding fput_light.
  */
-struct file *fget_light(unsigned int fd, int *fput_needed)
+static unsigned long __fget_light(unsigned int fd, fmode_t mask)
 {
-	struct file *file;
 	struct files_struct *files = current->files;
+	struct file *file;
 
-	*fput_needed = 0;
 	if (atomic_read(&files->count) == 1) {
-		file = fcheck_files(files, fd);
-		if (file && (file->f_mode & FMODE_PATH))
-			file = NULL;
+		file = __fcheck_files(files, fd);
+		if (!file || unlikely(file->f_mode & mask))
+			return 0;
+		return (unsigned long)file;
 	} else {
-		rcu_read_lock();
-		file = fcheck_files(files, fd);
-		if (file) {
-			if (!(file->f_mode & FMODE_PATH) &&
-			    atomic_long_inc_not_zero(&file->f_count))
-				*fput_needed = 1;
-			else
-				/* Didn't get the reference, someone's freed */
-				file = NULL;
-		}
-		rcu_read_unlock();
+		file = __fget(fd, mask);
+		if (!file)
+			return 0;
+		return FDPUT_FPUT | (unsigned long)file;
 	}
-
-	return file;
 }
-EXPORT_SYMBOL(fget_light);
-
-struct file *fget_raw_light(unsigned int fd, int *fput_needed)
+unsigned long __fdget(unsigned int fd)
 {
-	struct file *file;
-	struct files_struct *files = current->files;
-
-	*fput_needed = 0;
-	if (atomic_read(&files->count) == 1) {
-		file = fcheck_files(files, fd);
-	} else {
-		rcu_read_lock();
-		file = fcheck_files(files, fd);
-		if (file) {
-			if (atomic_long_inc_not_zero(&file->f_count))
-				*fput_needed = 1;
-			else
-				/* Didn't get the reference, someone's freed */
-				file = NULL;
-		}
-		rcu_read_unlock();
-	}
-
-	return file;
+	return __fget_light(fd, FMODE_PATH);
 }
+EXPORT_SYMBOL(__fdget);
+
+unsigned long __fdget_raw(unsigned int fd)
+{
+	return __fget_light(fd, 0);
+}
+
+unsigned long __fdget_pos(unsigned int fd)
+{
+	unsigned long v = __fdget(fd);
+	struct file *file = (struct file *)(v & ~3);
+
+	if (file && (file->f_mode & FMODE_ATOMIC_POS)) {
+		if (file_count(file) > 1) {
+			v |= FDPUT_POS_UNLOCK;
+			mutex_lock(&file->f_pos_lock);
+		}
+	}
+	return v;
+}
+
+/*
+ * We only lock f_pos if we have threads or if the file might be
+ * shared with another process. In both cases we'll have an elevated
+ * file count (done either by fdget() or by fork()).
+ */
 
 void set_close_on_exec(unsigned int fd, int flag)
 {
@@ -924,6 +895,7 @@ bool get_close_on_exec(unsigned int fd)
 
 static int do_dup2(struct files_struct *files,
 	struct file *file, unsigned fd, unsigned flags)
+__releases(&files->file_lock)
 {
 	struct file *tofree;
 	struct fdtable *fdt;

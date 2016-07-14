@@ -1,33 +1,36 @@
 #include <linux/kernel.h>
-#include <linux/stacktrace.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <asm/memory.h>
 #include <asm/cacheflush.h>
 #include <linux/kdebug.h>
 #include <linux/module.h>
-#include <linux/mrdump.h>
-#include <linux/mtk_ram_console.h>
-#include <linux/mrdump.h>
+#include <mrdump.h>
+#include <mt-plat/mtk_ram_console.h>
 #include <mach/wd_api.h>
+#include <linux/reboot.h>
 #include "ipanic.h"
-
-#define MAX_STACK_TRACE_DEPTH 32
-unsigned long ipanic_stack_entries[MAX_STACK_TRACE_DEPTH];
+#include <asm/system_misc.h>
 
 static u32 ipanic_iv = 0xaabbccdd;
 static spinlock_t ipanic_lock;
 struct ipanic_ops *ipanic_ops;
 typedef int (*fn_next) (void *data, unsigned char *buffer, size_t sz_buf);
 static bool ipanic_enable = 1;
-static char ipanic_task_info[PAGE_SIZE];
 
-extern void mrdump_mini_per_cpu_regs(int cpu, struct pt_regs *regs);
-extern void mrdump_mini_ke_cpu_regs(struct pt_regs *regs);
-extern void mrdump_mini_add_misc(unsigned long addr, unsigned long size, unsigned long start, char *name);
-extern void mrdump_mini_ipanic_done(void);
+int __weak ipanic_atflog_buffer(void *data, unsigned char *buffer, size_t sz_buf)
+{
+	return 0;
+}
 
-int __weak ipanic_atflog_buffer(void *data, unsigned char *buffer, size_t sz_buf) {
+int __weak panic_dump_android_log(char *buffer, size_t sz_buf, int type)
+{
+	return 0;
+}
+
+int __weak has_mt_dump_support(void)
+{
+	pr_notice("%s: no mt_dump support!\n", __func__);
 	return 0;
 }
 
@@ -36,9 +39,9 @@ void ipanic_block_scramble(u8 *buf, int buflen)
 {
 	int i;
 	u32 *p = (u32 *) buf;
-	for (i = 0; i < buflen; i += 4, p++) {
+
+	for (i = 0; i < buflen; i += 4, p++)
 		*p = *p ^ ipanic_iv;
-	}
 }
 #else
 void ipanic_block_scramble(u8 *buf, int buflen)
@@ -50,6 +53,7 @@ static void ipanic_kick_wdt(void)
 {
 	int res = 0;
 	struct wd_api *wd_api = NULL;
+
 	res = get_wd_api(&wd_api);
 	if (res == 0)
 		wd_api->wd_restart(WD_TYPE_NOLOCK);
@@ -64,19 +68,17 @@ void register_ipanic_ops(struct ipanic_ops *ops)
 
 struct aee_oops *ipanic_oops_copy(void)
 {
-	if (ipanic_ops) {
+	if (ipanic_ops)
 		return ipanic_ops->oops_copy();
-	} else {
+	else
 		return NULL;
-	}
 }
 EXPORT_SYMBOL(ipanic_oops_copy);
 
 void ipanic_oops_free(struct aee_oops *oops, int erase)
 {
-	if (ipanic_ops) {
+	if (ipanic_ops)
 		ipanic_ops->oops_free(oops, erase);
-	}
 }
 EXPORT_SYMBOL(ipanic_oops_free);
 
@@ -84,64 +86,11 @@ static int ipanic_alog_buffer(void *data, unsigned char *buffer, size_t sz_buf);
 
 static int ipanic_current_task_info(void *data, unsigned char *buffer, size_t sz_buf)
 {
-	struct stack_trace trace;
-	int i, plen;
-	struct task_struct *tsk;
-	struct aee_process_info *cur_proc;
-	struct pt_regs *regs = (struct pt_regs *)data;
-
-	if (!virt_addr_valid(current_thread_info()))
-		return -1;
-	tsk = current_thread_info()->task;
-	if (!virt_addr_valid(tsk))
-		return -1;
-	cur_proc = (struct aee_process_info *)ipanic_task_info;
-	memset(cur_proc, 0, sizeof(struct aee_process_info));
-
-	/* Grab kernel task stack trace */
-	trace.nr_entries = 0;
-	trace.max_entries = MAX_STACK_TRACE_DEPTH;
-	trace.entries = ipanic_stack_entries;
-	trace.skip = 8;
-	save_stack_trace_tsk(tsk, &trace);
-	/* Skip the entries -  ipanic_save_current_tsk_info/save_stack_trace_tsk */
-	for (i = 0; i < trace.nr_entries; i++) {
-		int off = strlen(cur_proc->backtrace);
-		int plen = AEE_BACKTRACE_LENGTH - off;
-		if (plen > 16) {
-			snprintf(cur_proc->backtrace + off, plen, "[<%p>] %pS\n",
-				 (void *)ipanic_stack_entries[i], (void *)ipanic_stack_entries[i]);
-		}
-	}
-	if (regs) {
-		cur_proc->ke_frame.pc = (__u64) regs->reg_pc;
-		cur_proc->ke_frame.lr = (__u64) regs->reg_lr;
-	} else {
-		/* in case panic() is called without die */
-		/* Todo: a UT for this */
-		cur_proc->ke_frame.pc = ipanic_stack_entries[0];
-		cur_proc->ke_frame.lr = ipanic_stack_entries[1];
-	}
-	snprintf(cur_proc->ke_frame.pc_symbol, AEE_SZ_SYMBOL_S, "[<%p>] %pS",
-		 (void *)(unsigned long) cur_proc->ke_frame.pc, (void *)(unsigned long) cur_proc->ke_frame.pc);
-	snprintf(cur_proc->ke_frame.lr_symbol, AEE_SZ_SYMBOL_L, "[<%p>] %pS",
-		 (void *)(unsigned long) cur_proc->ke_frame.lr, (void *)(unsigned long) cur_proc->ke_frame.lr);
-	/* Current panic user tasks */
-	plen = 0;
-	while (tsk && (tsk->pid != 0) && (tsk->pid != 1)) {
-		/* FIXME: Check overflow ? */
-		plen += snprintf(cur_proc->process_path + plen, AEE_PROCESS_NAME_LENGTH,
-				 "[%s, %d]", tsk->comm, tsk->pid);
-		tsk = tsk->real_parent;
-	}
-	mrdump_mini_add_misc((unsigned long)cur_proc, sizeof(struct aee_process_info), 0, "PROC_CUR_TSK");
-	memcpy(buffer, cur_proc, sizeof(struct aee_process_info));
-	return sizeof(struct aee_process_info);
+	return mrdump_task_info(buffer, sz_buf);
 }
 
-#ifdef CONFIG_MTK_MMPROFILE_SUPPORT
-extern unsigned int MMProfileGetDumpSize(void);
-extern void MMProfileGetDumpBuffer(unsigned int Start, unsigned int *pAddr, unsigned int *pSize);
+/*#ifdef CONFIG_MTK_MMPROFILE_SUPPORT*/
+#ifdef CONFIG_MMPROFILE
 static int ipanic_mmprofile(void *data, unsigned char *buffer, size_t sz_buf)
 {
 	int errno = 0;
@@ -158,7 +107,7 @@ static int ipanic_mmprofile(void *data, unsigned char *buffer, size_t sz_buf)
 		}
 	}
 
-	MMProfileGetDumpBuffer(index, (unsigned int*)&pbuf, &bufsize);
+	MMProfileGetDumpBuffer(index, (unsigned int *)&pbuf, &bufsize);
 	if (bufsize == 0) {
 		errno = 0;
 	} else if (bufsize > sz_buf) {
@@ -172,21 +121,18 @@ static int ipanic_mmprofile(void *data, unsigned char *buffer, size_t sz_buf)
 }
 #endif
 
-const ipanic_dt_op_t ipanic_dt_ops[] = {
+const struct ipanic_dt_op ipanic_dt_ops[] = {
 	{"IPANIC_HEADER", 0, NULL},
 	{"SYS_KERNEL_LOG", __LOG_BUF_LEN, ipanic_klog_buffer},
 	{"SYS_WDT_LOG", WDT_LOG_LEN, ipanic_klog_buffer},
-#ifdef CONFIG_MTK_WQ_DEBUG
-	{"SYS_WQ_LOG", WQ_LOG_LEN, ipanic_klog_buffer},
-#else
 	{"SYS_WQ_LOG", 0, NULL},
-#endif
 	{"reserved", 0, NULL},
 	{"reserved", 0, NULL},
 	{"PROC_CUR_TSK", sizeof(struct aee_process_info), ipanic_current_task_info},
 	{"_exp_detail.txt", OOPS_LOG_LEN, ipanic_klog_buffer},
 	{"SYS_MINI_RDUMP", MRDUMP_MINI_BUF_SIZE, NULL},	/* 8 */
-#ifdef CONFIG_MTK_MMPROFILE_SUPPORT
+/*#ifdef CONFIG_MTK_MMPROFILE_SUPPORT*/
+#ifdef CONFIG_MMPROFILE
 	{"SYS_MMPROFILE", IPANIC_MMPROFILE_LIMIT, ipanic_mmprofile},
 #else
 	{"SYS_MMPROFILE", 0, NULL},
@@ -215,8 +161,8 @@ const ipanic_dt_op_t ipanic_dt_ops[] = {
 	{"reserved", 0, NULL},
 };
 
-static const char IPANIC_DT_STR[][16] =
-    { "Undefined", "kernel log", "main log", "system log", "radio log" };
+static const char IPANIC_DT_STR[][16] = {"XXXXXXXXX", "XXXXXXXXXX",
+	"XXXXXXXX", "XXXXXXXXXX", "XXXXXXXXX" };
 static const char IPANIC_ERR_MSG[][16] = { "unaligned", "blk alignment" };
 
 static struct ipanic_header ipanic_hdr, *iheader;
@@ -230,9 +176,9 @@ static int ipanic_memory_buffer(void *data, unsigned char *buffer, size_t sz_buf
 	unsigned long start = mem->kstart;
 	unsigned long end = mem->kend;
 	unsigned long pos = mem->pos;
-	if (pos > end || pos < start) {
+
+	if (pos > end || pos < start)
 		return -1;
-	}
 	sz_real = (end - pos) > sz_buf ? sz_buf : (end - pos);
 	memcpy(buffer, (void *)pos, sz_real);
 	mem->pos += sz_real;
@@ -242,6 +188,7 @@ static int ipanic_memory_buffer(void *data, unsigned char *buffer, size_t sz_buf
 static int ipanic_alog_buffer(void *data, unsigned char *buffer, size_t sz_buf)
 {
 	int rc;
+
 	rc = panic_dump_android_log(buffer, sz_buf, (unsigned long)data);
 	if (rc < 0)
 		rc = -1;
@@ -258,6 +205,7 @@ inline int ipanic_func_write(fn_next next, void *data, int off, int total, int e
 	size_t sz_ipanic_buffer = iheader->bufsize;
 	size_t blksize = iheader->blksize;
 	int many = total > iheader->bufsize;
+
 	LOGV("off[%x], encrypt[%d]\n", off, encrypt);
 
 	if (off & (blksize - 1))
@@ -277,11 +225,10 @@ inline int ipanic_func_write(fn_next next, void *data, int off, int total, int e
 		}
 		if (encrypt)
 			ipanic_block_scramble(ipanic_buffer, size);
-		if (size != sz_ipanic_buffer) {
+		if (size != sz_ipanic_buffer)
 			memset(ipanic_buffer + size, 0, sz_ipanic_buffer - size);
-		}
 		LOGV("%x@%x\n", size, off);
-		
+
 		if (ipanic_enable)
 			errno = ipanic_write_size(ipanic_buffer, off, ALIGN(size, blksize));
 		else
@@ -315,6 +262,7 @@ static int ipanic_header_to_sd(struct ipanic_data_header *header)
 	int errno = 0;
 	int first_write = 0;
 	struct ipanic_header *ipanic_hdr = ipanic_header();
+
 	if (!ipanic_hdr->datas)
 		first_write = 1;
 	if (header) {
@@ -324,11 +272,12 @@ static int ipanic_header_to_sd(struct ipanic_data_header *header)
 	if (ipanic_hdr->dhblk == 0 || header == NULL || first_write == 1)
 		errno = ipanic_mem_write(ipanic_hdr, 0, sizeof(struct ipanic_header), 0);
 	if (ipanic_hdr->dhblk && header)
-		errno = ipanic_mem_write(header, header->offset - ipanic_hdr->dhblk, sizeof(struct ipanic_data_header), 0);
+		errno =
+		    ipanic_mem_write(header, header->offset - ipanic_hdr->dhblk,
+				     sizeof(struct ipanic_data_header), 0);
 
-	if (IS_ERR(ERR_PTR(errno))) {
+	if (IS_ERR(ERR_PTR(errno)))
 		LOGW("%s: failed[%x-%d]\n", __func__, header ? header->type : 0, errno);
-	}
 	return errno;
 }
 
@@ -336,15 +285,17 @@ static int ipanic_data_is_valid(int dt)
 {
 	struct ipanic_header *ipanic_hdr = ipanic_header();
 	struct ipanic_data_header *dheader = &ipanic_hdr->data_hdr[dt];
+
 	return (dheader->valid == 1);
 }
 
 int ipanic_data_to_sd(int dt, void *data)
 {
 	int errno = 0;
-	int (*next) (void *data, unsigned char *buffer, size_t sz_buf);
+	int (*next)(void *data, unsigned char *buffer, size_t sz_buf);
 	struct ipanic_header *ipanic_hdr = ipanic_header();
 	struct ipanic_data_header *dheader = &ipanic_hdr->data_hdr[dt];
+
 	if (!ipanic_dt_active(dt) || dheader->valid == 1)
 		return -4;
 
@@ -395,6 +346,8 @@ void ipanic_mrdump_mini(AEE_REBOOT_MODE reboot_mode, const char *msg, ...)
 void *ipanic_data_from_sd(struct ipanic_data_header *dheader, int encrypt)
 {
 	void *data;
+
+	/* data = expdb_read_size(dheader->offset, dheader->used);*/
 	data = ipanic_read_size(dheader->offset, dheader->used);
 	if (data != 0 && encrypt != 0)
 		ipanic_block_scramble((unsigned char *)data, dheader->used);
@@ -442,10 +395,10 @@ struct aee_oops *ipanic_oops_from_sd(void)
 	struct ipanic_data_header *dheader;
 	char *data;
 	int i;
+
 	hdr = ipanic_header_from_sd(0, AEE_IPANIC_MAGIC);
-	if (hdr == NULL) {
+	if (hdr == NULL)
 		return NULL;
-	}
 
 	oops = aee_oops_create(AE_DEFECT_FATAL, AE_KE, IPANIC_MODULE_TAG);
 	if (oops == NULL) {
@@ -455,9 +408,8 @@ struct aee_oops *ipanic_oops_from_sd(void)
 
 	for (i = IPANIC_DT_HEADER + 1; i < IPANIC_DT_RESERVED31; i++) {
 		dheader = &hdr->data_hdr[i];
-		if (dheader->valid == 0) {
+		if (dheader->valid == 0)
 			continue;
-		}
 		data = ipanic_data_from_sd(dheader, 1);
 		if (data) {
 			switch (i) {
@@ -485,7 +437,7 @@ struct aee_oops *ipanic_oops_from_sd(void)
 				oops->android_radio_len = dheader->used;
 				break;
 			case IPANIC_DT_CURRENT_TSK:
-				memcpy(oops->process_path, data, sizeof(struct aee_process_info));
+				memcpy(oops->process_path, data, AEE_PROCESS_NAME_LENGTH - 1);
 				break;
 			case IPANIC_DT_MMPROFILE:
 				oops->mmprofile = data;
@@ -506,11 +458,14 @@ int ipanic(struct notifier_block *this, unsigned long event, void *ptr)
 {
 	struct ipanic_data_header *dheader;
 	struct kmsg_dumper dumper;
-    ipanic_atf_log_rec_t atf_log = {ATF_LOG_SIZE, 0, 0};
+	struct ipanic_atf_log_rec atf_log = { ATF_LOG_SIZE, 0, 0 };
 	int dt;
 	int errno;
 	struct ipanic_header *ipanic_hdr;
+
+	memset(&dumper, 0x0, sizeof(struct kmsg_dumper));
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_KE_IPANIC_START);
+	aee_rr_rec_exp_type(2);
 	bust_spinlocks(1);
 	spin_lock_irq(&ipanic_lock);
 	aee_disable_api();
@@ -536,9 +491,6 @@ int ipanic(struct notifier_block *this, unsigned long event, void *ptr)
 	aee_wdt_dump_info();
 	ipanic_klog_region(&dumper);
 	ipanic_data_to_sd(IPANIC_DT_WDT_LOG, &dumper);
-#ifdef CONFIG_MTK_WQ_DEBUG
-	mt_dump_wq_debugger();
-#endif
 	ipanic_klog_region(&dumper);
 	ipanic_data_to_sd(IPANIC_DT_WQ_LOG, &dumper);
 	ipanic_data_to_sd(IPANIC_DT_MMPROFILE, 0);
@@ -552,9 +504,8 @@ int ipanic(struct notifier_block *this, unsigned long event, void *ptr)
 	ipanic_hdr = ipanic_header();
 	for (dt = IPANIC_DT_HEADER + 1; dt < IPANIC_DT_RESERVED31; dt++) {
 		dheader = &ipanic_hdr->data_hdr[dt];
-		if (dheader->valid) {
+		if (dheader->valid)
 			LOGD("%s[%x@%x],", dheader->name, dheader->used, dheader->offset);
-		}
 	}
 	LOGD("^_^\n");
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_KE_IPANIC_DONE);
@@ -566,7 +517,9 @@ void ipanic_recursive_ke(struct pt_regs *regs, struct pt_regs *excp_regs, int cp
 {
 	int errno;
 	struct kmsg_dumper dumper;
+
 	aee_nested_printf("minidump\n");
+	aee_rr_rec_exp_type(3);
 	bust_spinlocks(1);
 	flush_cache_all();
 #ifdef __aarch64__
@@ -581,6 +534,7 @@ void ipanic_recursive_ke(struct pt_regs *regs, struct pt_regs *excp_regs, int cp
 
 	ipanic_data_to_sd(IPANIC_DT_CURRENT_TSK, 0);
 	ipanic_kick_wdt();
+	memset(&dumper, 0x0, sizeof(struct kmsg_dumper));
 	ipanic_klog_region(&dumper);
 	ipanic_data_to_sd(IPANIC_DT_KERNEL_LOG, &dumper);
 	errno = ipanic_header_to_sd(0);
@@ -600,6 +554,7 @@ struct ipanic_header *ipanic_header(void)
 	int i;
 	struct ipanic_data_header *dheader;
 	int next_offset;
+
 	if (iheader)
 		return iheader;
 	iheader = &ipanic_hdr;
@@ -623,7 +578,7 @@ struct ipanic_header *ipanic_header(void)
 		dheader->type = i;
 		dheader->valid = 0;
 		dheader->used = 0;
-		strncpy(dheader->name, ipanic_dt_ops[i].string, 32);
+		strncpy(dheader->name, ipanic_dt_ops[i].string, 31);
 		if (ipanic_dt_active(i) && ipanic_dt_ops[i].size) {
 			dheader->encrypt = ipanic_dt_encrypt(i);
 			dheader->offset = next_offset + iheader->dhblk;
@@ -657,18 +612,27 @@ static int ipanic_die(struct notifier_block *self, unsigned long cmd, void *ptr)
 {
 	struct kmsg_dumper dumper;
 	struct die_args *dargs = (struct die_args *)ptr;
+
 	aee_disable_api();
+	__show_regs(dargs->regs);
+	dump_stack();
 
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_KE_IPANIC_DIE);
+	aee_rr_rec_exp_type(2);
 	mrdump_mini_ke_cpu_regs(dargs->regs);
 	flush_cache_all();
 
-	/* No return if mrdump is enable */
-	aee_kdump_reboot(AEE_REBOOT_MODE_KERNEL_OOPS, "Kernel Oops");
+	if (aee_rr_curr_exp_type() == 2)
+		/* No return if mrdump is enable */
+		__mrdump_create_oops_dump(AEE_REBOOT_MODE_KERNEL_OOPS, dargs->regs, "Kernel Oops");
+
+	if (!has_mt_dump_support())
+		emergency_restart();
 
 	smp_send_stop();
 
 	ipanic_mrdump_mini(AEE_REBOOT_MODE_KERNEL_PANIC, "kernel Oops");
+	memset(&dumper, 0x0, sizeof(struct kmsg_dumper));
 	ipanic_klog_region(&dumper);
 	ipanic_data_to_sd(IPANIC_DT_KERNEL_LOG, &dumper);
 	ipanic_data_to_sd(IPANIC_DT_CURRENT_TSK, dargs->regs);
@@ -699,6 +663,7 @@ int __init aee_ipanic_init(void)
 	LOGI("ipanic: startup, partition assgined %s\n", AEE_IPANIC_PLABEL);
 	return 0;
 }
+
 module_init(aee_ipanic_init);
 
 module_param(ipanic_enable, bool, S_IRUGO | S_IWUSR);

@@ -1,6 +1,6 @@
-include $(srctree)/drivers/misc/mediatek/Makefile.custom
+MTK_PLATFORM:= $(subst ",,$(CONFIG_MTK_PLATFORM))
 
-obj-y += mt_auxadc.o
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/auxadc/$(MTK_PLATFORM)
 
-obj-y += $(subst ",,$(CONFIG_MTK_PLATFORM))/
+obj-$(CONFIG_MTK_AUXADC) += mt_auxadc.o
 

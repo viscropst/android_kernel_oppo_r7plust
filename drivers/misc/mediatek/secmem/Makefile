@@ -1,3 +1,0 @@
-
-obj-$(CONFIG_TRUSTONIC_TEE_SUPPORT) += $(subst ",,$(CONFIG_MTK_PLATFORM))/
-

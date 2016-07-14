@@ -15,11 +15,12 @@
 #include <linux/freezer.h>
 #include <linux/kthread.h>
 #include <linux/scatterlist.h>
+#include <linux/dma-mapping.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
 #include "queue.h"
-#include <linux/mmc/mmc.h>
+
 #define MMC_QUEUE_BOUNCESZ	65536
 
 /*
@@ -37,7 +38,7 @@ static int mmc_prep_request(struct request_queue *q, struct request *req)
 		return BLKPREP_KILL;
 	}
 
-	if (mq && mmc_card_removed(mq->card))
+	if (mq && (mmc_card_removed(mq->card) || mmc_access_rpmb(mq)))
 		return BLKPREP_KILL;
 
 	req->cmd_flags |= REQ_DONTPREP;
@@ -49,11 +50,10 @@ static int mmc_queue_thread(void *d)
 {
 	struct mmc_queue *mq = d;
 	struct request_queue *q = mq->queue;
-#ifdef MMC_ENABLED_EMPTY_QUEUE_FLUSH
-#define UN_FLUSHED 0 
-#define FLUSHING 1
-	int stop_status = UN_FLUSHED;
+#ifdef MTK_BKOPS_IDLE_MAYA
+	struct mmc_card *card = mq->card;
 #endif
+
 	current->flags |= PF_MEMALLOC;
 
 	down(&mq->thread_sem);
@@ -69,14 +69,6 @@ static int mmc_queue_thread(void *d)
 		spin_unlock_irq(q->queue_lock);
 
 		if (req || mq->mqrq_prev->req) {
-#ifdef MMC_ENABLED_EMPTY_QUEUE_FLUSH
-			if (!mq->mqrq_prev->req && mq->card && mmc_card_mmc(mq->card) && mq->card->ext_csd.cache_ctrl) { 
-				if(stop_status == FLUSHING){
-					mmc_stop_flush(mq->card);
-					stop_status = UN_FLUSHED;
-				}
-			}
-#endif
 			set_current_state(TASK_RUNNING);
 			cmd_flags = req ? req->cmd_flags : 0;
 			mq->issue_fn(mq, req);
@@ -101,16 +93,13 @@ static int mmc_queue_thread(void *d)
 			mq->mqrq_prev = mq->mqrq_cur;
 			mq->mqrq_cur = tmp;
 		} else {
-#ifdef MMC_ENABLED_EMPTY_QUEUE_FLUSH
-			if ((stop_status == UN_FLUSHED) && mq->card && mmc_card_mmc(mq->card) && mq->card->ext_csd.cache_ctrl) {
-			    mmc_start_delayed_flush(mq->card);  
-			    stop_status = FLUSHING;
-			}
-#endif
 			if (kthread_should_stop()) {
 				set_current_state(TASK_RUNNING);
 				break;
 			}
+#ifdef MTK_BKOPS_IDLE_MAYA
+			mmc_start_delayed_bkops(card);
+#endif
 			up(&mq->thread_sem);
 			schedule();
 			down(&mq->thread_sem);
@@ -191,7 +180,7 @@ static void mmc_queue_setup_discard(struct request_queue *q,
 	/* granularity must not be greater than max. discard */
 	if (card->pref_erase > max_discard)
 		q->limits.discard_granularity = 0;
-	if (mmc_can_secure_erase_trim(card) || mmc_can_sanitize(card))
+	if (mmc_can_secure_erase_trim(card))
 		queue_flag_set_unlocked(QUEUE_FLAG_SECDISCARD, q);
 }
 
@@ -208,31 +197,26 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card,
 		   spinlock_t *lock, const char *subname)
 {
 	struct mmc_host *host = card->host;
-	u64 limit = BLK_BOUNCE_ANY;
+	u64 limit = BLK_BOUNCE_HIGH;
 	int ret;
 	struct mmc_queue_req *mqrq_cur = &mq->mqrq[0];
 	struct mmc_queue_req *mqrq_prev = &mq->mqrq[1];
 
 	if (mmc_dev(host)->dma_mask && *mmc_dev(host)->dma_mask)
-		limit = *mmc_dev(host)->dma_mask;
+		limit = (u64)dma_max_pfn(mmc_dev(host)) << PAGE_SHIFT;
 
 	mq->card = card;
 	mq->queue = blk_init_queue(mmc_request_fn, lock);
 	if (!mq->queue)
 		return -ENOMEM;
 
-#ifdef CONFIG_ZRAM    
-    if (mmc_card_mmc(card) &&
-        (totalram_pages << (PAGE_SHIFT - 10)) <= (256 * 1024))
-        mq->queue->backing_dev_info.ra_pages =
-    		(VM_MIN_READAHEAD * 1024) / PAGE_CACHE_SIZE;
-#endif // CONFIG_ZRAM
 	mq->mqrq_cur = mqrq_cur;
 	mq->mqrq_prev = mqrq_prev;
 	mq->queue->queuedata = mq;
 
 	blk_queue_prep_rq(mq->queue, mmc_prep_request);
 	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, mq->queue);
+	queue_flag_clear_unlocked(QUEUE_FLAG_ADD_RANDOM, mq->queue);
 	if (mmc_can_erase(card))
 		mmc_queue_setup_discard(mq->queue, card);
 
@@ -252,14 +236,12 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card,
 		if (bouncesz > 512) {
 			mqrq_cur->bounce_buf = kmalloc(bouncesz, GFP_KERNEL);
 			if (!mqrq_cur->bounce_buf) {
-				pr_warning("%s: unable to "
-					"allocate bounce cur buffer\n",
+				pr_warn("%s: unable to allocate bounce cur buffer\n",
 					mmc_card_name(card));
 			}
 			mqrq_prev->bounce_buf = kmalloc(bouncesz, GFP_KERNEL);
 			if (!mqrq_prev->bounce_buf) {
-				pr_warning("%s: unable to "
-					"allocate bounce prev buffer\n",
+				pr_warn("%s: unable to allocate bounce prev buffer\n",
 					mmc_card_name(card));
 				kfree(mqrq_cur->bounce_buf);
 				mqrq_cur->bounce_buf = NULL;

@@ -1,27 +1,29 @@
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/aee.h>
+#include <mt-plat/aee.h>
 #include <linux/utsname.h>
 #include <linux/sched.h>
 #include <linux/list.h>
 #include <linux/init.h>
 #include <linux/smp.h>
-#include <linux/mt_sched_mon.h>
+#ifdef CONFIG_MT_SCHED_MONITOR
+#include "mt_sched_mon.h"
+#endif
 #include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/hardirq.h>
-#include <linux/stacktrace.h>
 #include <linux/mm.h>
 #include <linux/types.h>
-#include <linux/mrdump.h>
+#include <mrdump.h>
 #include <linux/uaccess.h>
+#include <linux/stacktrace.h>
 #include <asm/stacktrace.h>
 #include <asm/memory.h>
 #include <asm/traps.h>
-#include <asm/compiler.h>
-#include <mach/fiq_smp_call.h>
+#include <linux/compiler.h>
+/* #include <mach/fiq_smp_call.h> */
 #include <mach/wd_api.h>
-#include <mach/smp.h>
+#include <smp.h>
 #ifndef CONFIG_ARM64
 #include <mach/irqs.h>
 #endif
@@ -32,18 +34,12 @@
 #define THREAD_INFO(sp) ((struct thread_info *) \
 				((unsigned long)(sp) & ~(THREAD_SIZE - 1)))
 
-#ifdef CONFIG_SCHED_DEBUG
-extern int sysrq_sched_debug_show_at_KE(void);
-#endif
-
-
 #define WDT_PERCPU_LOG_SIZE		2048
 #define WDT_LOG_DEFAULT_SIZE	4096
 #define WDT_SAVE_STACK_SIZE		256
 #define MAX_EXCEPTION_FRAME		16
 #define PRINTK_BUFFER_SIZE		512
 
-extern int debug_locks;
 /* NR_CPUS may not eaqual to real cpu numbers, alloc buffer at initialization */
 static char *wdt_percpu_log_buf[NR_CPUS];
 static int wdt_percpu_log_length[NR_CPUS];
@@ -55,26 +51,28 @@ static atomic_t wdt_enter_fiq;
 static char printk_buf[PRINTK_BUFFER_SIZE];
 
 #define ATF_AEE_DEBUG_BUF_LENGTH	0x4000
-static void *atf_aee_debug_virt_addr = 0;
+static void *atf_aee_debug_virt_addr;
 
 struct atf_aee_regs {
-    __u64    regs[31];
-    __u64    sp;
-    __u64    pc;
-    __u64    pstate;
+	__u64 regs[31];
+	__u64 sp;
+	__u64 pc;
+	__u64 pstate;
 };
 
-static struct {
+struct stacks_buffer {
 	char bin_buf[WDT_SAVE_STACK_SIZE];
 	int real_len;
 	unsigned long top;
 	unsigned long bottom;
-} stacks_buffer_bin[NR_CPUS];
+};
+static struct stacks_buffer stacks_buffer_bin[NR_CPUS];
 
-static struct {
+struct regs_buffer {
 	struct pt_regs regs;
 	int real_len;
-} regs_buffer_bin[NR_CPUS];
+};
+static struct regs_buffer regs_buffer_bin[NR_CPUS];
 
 
 int in_fiq_handler(void)
@@ -87,18 +85,21 @@ void aee_wdt_dump_info(void)
 	struct task_struct *task;
 	int cpu, i;
 	char *log_buf_ptr;
+
 	task = &init_task;
 
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_KE_WDT_INFO);
 	if (wdt_log_length == 0) {
 		LOGE("\n No log for WDT\n");
+#ifdef CONFIG_MT_SCHED_MONITOR
 		mt_dump_sched_traces();
+#endif
 		return;
 	}
 
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_KE_WDT_PERCPU);
 	LOGE("==========================================\n");
-	for (cpu = 0; cpu < num_possible_cpus(); cpu++) {
+	for (cpu = 0; cpu < NR_CPUS; cpu++) {
 		if ((wdt_percpu_log_buf[cpu]) && (wdt_percpu_log_length[cpu])) {
 			log_buf_ptr = wdt_percpu_log_buf[cpu];
 			while (wdt_percpu_log_length[cpu] > 0) {
@@ -149,7 +150,7 @@ void aee_wdt_dump_info(void)
 
 #ifdef CONFIG_SCHED_DEBUG
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_KE_SCHED_DEBUG);
-	sysrq_sched_debug_show_at_KE();
+	/* sysrq_sched_debug_show_at_KE(); */
 #endif
 
 	for_each_process(task) {
@@ -193,6 +194,7 @@ static void aee_dump_cpu_reg_bin(int cpu, struct pt_regs *regs)
 {
 #ifdef CONFIG_ARM64
 	int i;
+
 	aee_wdt_percpu_printf(cpu, "pc : %016llx, lr : %016llx, pstate : %016llx\n",
 			      regs->pc, regs->regs[30], regs->pstate);
 	aee_wdt_percpu_printf(cpu, "sp : %016llx\n", regs->sp);
@@ -204,22 +206,19 @@ static void aee_dump_cpu_reg_bin(int cpu, struct pt_regs *regs)
 	aee_wdt_percpu_printf(cpu, "\n");
 #else
 	aee_wdt_percpu_printf(cpu, "pc  : %08lx, lr : %08lx, cpsr : %08lx\n",
-			regs->ARM_pc, regs->ARM_lr, regs->ARM_cpsr);
+			      regs->ARM_pc, regs->ARM_lr, regs->ARM_cpsr);
 	aee_wdt_percpu_printf(cpu, "sp  : %08lx, ip : %08lx, fp : %08lx\n",
-			regs->ARM_sp, regs->ARM_ip, regs->ARM_fp);
+			      regs->ARM_sp, regs->ARM_ip, regs->ARM_fp);
 	aee_wdt_percpu_printf(cpu, "r10 : %08lx, r9 : %08lx, r8 : %08lx\n",
-			regs->ARM_r10, regs->ARM_r9, regs->ARM_r8);
+			      regs->ARM_r10, regs->ARM_r9, regs->ARM_r8);
 	aee_wdt_percpu_printf(cpu, "r7  : %08lx, r6 : %08lx, r5 : %08lx\n",
-			regs->ARM_r7, regs->ARM_r6, regs->ARM_r5);
+			      regs->ARM_r7, regs->ARM_r6, regs->ARM_r5);
 	aee_wdt_percpu_printf(cpu, "r4  : %08lx, r3 : %08lx, r2 : %08lx\n",
-			regs->ARM_r4, regs->ARM_r3, regs->ARM_r2);
-	aee_wdt_percpu_printf(cpu, "r1  : %08lx, r0 : %08lx\n",
-			regs->ARM_r1, regs->ARM_r0);
+			      regs->ARM_r4, regs->ARM_r3, regs->ARM_r2);
+	aee_wdt_percpu_printf(cpu, "r1  : %08lx, r0 : %08lx\n", regs->ARM_r1, regs->ARM_r0);
 #endif
 	memcpy(&(regs_buffer_bin[cpu].regs), regs, sizeof(struct pt_regs));
 	regs_buffer_bin[cpu].real_len = sizeof(struct pt_regs);
-
-	return;
 }
 
 /* dump the stack into per CPU buffer */
@@ -252,7 +251,6 @@ static void aee_wdt_dump_stack_bin(unsigned int cpu, unsigned long bottom, unsig
 				      top);
 		return;
 	}
-
 #ifdef CONFIG_ARM64
 	aee_wdt_percpu_printf(cpu, "stack (0x%016lx to 0x%016lx)\n", bottom, top);
 #else
@@ -260,7 +258,7 @@ static void aee_wdt_dump_stack_bin(unsigned int cpu, unsigned long bottom, unsig
 #endif
 
 	for (first = bottom & ~31; first < top; first += 32) {
-		memset(str, ' ', sizeof(str));
+		memset_io(str, ' ', sizeof(str));
 		str[sizeof(str) - 1] = '\0';
 
 		for (p = first, i = 0; i < 8 && p < top; i++, p += 4) {
@@ -273,7 +271,6 @@ static void aee_wdt_dump_stack_bin(unsigned int cpu, unsigned long bottom, unsig
 		}
 		aee_wdt_percpu_printf(cpu, "%04lx:%s\n", first & 0xffff, str);
 	}
-	return;
 }
 
 /* dump the backtrace into per CPU buffer */
@@ -301,19 +298,19 @@ static void aee_wdt_dump_backtrace(unsigned int cpu, struct pt_regs *regs)
 			break;
 		}
 		if (unwind_frame(&cur_frame) < 0) {
-			aee_wdt_percpu_printf(cpu, "unwind_frame < 0 \n");
+			aee_wdt_percpu_printf(cpu, "unwind_frame < 0\n");
 			break;
 		}
 		if (!((cur_frame.pc >= (PAGE_OFFSET + THREAD_SIZE))
-		     && virt_addr_valid(cur_frame.pc))) {
-			aee_wdt_percpu_printf(cpu, "virt_addr_valid fail \n");
+		      && virt_addr_valid(cur_frame.pc))) {
+			aee_wdt_percpu_printf(cpu, "virt_addr_valid fail\n");
 			break;
 		}
 		if (in_exception_text(cur_frame.pc)) {
 #ifdef CONFIG_ARM64
 			/* work around for unknown reason do_mem_abort stack abnormal */
 			excp_regs = (void *)(cur_frame.fp + 0x10 + 0xa0);
-			unwind_frame(&cur_frame); /* skip do_mem_abort & el1_da */
+			unwind_frame(&cur_frame);	/* skip do_mem_abort & el1_da */
 #else
 			excp_regs = (void *)(cur_frame.fp + 4);
 #endif
@@ -321,10 +318,8 @@ static void aee_wdt_dump_backtrace(unsigned int cpu, struct pt_regs *regs)
 		}
 		wdt_percpu_stackframe[cpu][i] = cur_frame.pc;
 	}
-	return;
 }
 
-extern void mrdump_mini_per_cpu_regs(int cpu, struct pt_regs *regs);
 /* save binary register and stack value into ram console */
 static void aee_save_reg_stack_sram(int cpu)
 {
@@ -340,10 +335,9 @@ static void aee_save_reg_stack_sram(int cpu)
 			 ((wdt_percpu_preempt_cnt[cpu] & HARDIRQ_MASK) >> HARDIRQ_SHIFT));
 		aee_sram_fiq_log(str_buf);
 
-		memset(str_buf, 0, sizeof(str_buf));
+		memset_io(str_buf, 0, sizeof(str_buf));
 #ifdef CONFIG_ARM64
-		snprintf(str_buf, sizeof(str_buf),
-			 "\ncpu %d x0->x30 sp pc pstate\n", cpu);
+		snprintf(str_buf, sizeof(str_buf), "\ncpu %d x0->x30 sp pc pstate\n", cpu);
 #else
 		snprintf(str_buf, sizeof(str_buf),
 			 "\ncpu %d r0->r10 fp ip sp lr pc cpsr orig_r0\n", cpu);
@@ -354,7 +348,7 @@ static void aee_save_reg_stack_sram(int cpu)
 	}
 
 	if (stacks_buffer_bin[cpu].real_len > 0) {
-		memset(str_buf, 0, sizeof(str_buf));
+		memset_io(str_buf, 0, sizeof(str_buf));
 #ifdef CONFIG_ARM64
 		snprintf(str_buf, sizeof(str_buf), "\ncpu %d stack [%016lx %016lx]\n",
 			 cpu, stacks_buffer_bin[cpu].bottom, stacks_buffer_bin[cpu].top);
@@ -366,7 +360,7 @@ static void aee_save_reg_stack_sram(int cpu)
 		aee_sram_fiq_save_bin(stacks_buffer_bin[cpu].bin_buf,
 				      stacks_buffer_bin[cpu].real_len);
 
-		memset(str_buf, 0, sizeof(str_buf));
+		memset_io(str_buf, 0, sizeof(str_buf));
 		len = snprintf(str_buf, sizeof(str_buf), "\ncpu %d backtrace : ", cpu);
 		for (i = 0; i < MAX_EXCEPTION_FRAME; i++) {
 			if (wdt_percpu_stackframe[cpu][i] == 0)
@@ -418,7 +412,7 @@ void aee_wdt_atf_info(unsigned int cpu, struct pt_regs *regs)
 		set_cpu_online(cpu, false);
 		local_fiq_disable();
 		local_irq_disable();
-	
+
 		while (1)
 			cpu_relax();
 	}
@@ -428,11 +422,11 @@ void aee_wdt_atf_info(unsigned int cpu, struct pt_regs *regs)
 
 	if (regs) {
 		aee_rr_rec_fiq_step(AEE_FIQ_STEP_WDT_IRQ_STACK);
-		for (cpu = 0; cpu < num_possible_cpus(); cpu++)
+		for (cpu = 0; cpu < NR_CPUS; cpu++)
 			aee_save_reg_stack_sram(cpu);
 		aee_sram_fiq_log("\n\n");
 	} else {
-		aee_wdt_printf("Invalid atf_aee_debug_virt_addr, no register dump \n");
+		aee_wdt_printf("Invalid atf_aee_debug_virt_addr, no register dump\n");
 	}
 
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_WDT_IRQ_KICK);
@@ -441,8 +435,8 @@ void aee_wdt_atf_info(unsigned int cpu, struct pt_regs *regs)
 		aee_wdt_printf("aee_wdt_irq_info, get wd api error\n");
 	} else {
 		wd_api->wd_restart(WD_TYPE_NOLOCK);
-		aee_wdt_printf("kick=0x%08x,check=0x%08x", wd_api->wd_get_kick_bit(), 
-					wd_api->wd_get_check_bit());
+		aee_wdt_printf("kick=0x%08x,check=0x%08x", wd_api->wd_get_kick_bit(),
+			       wd_api->wd_get_check_bit());
 	}
 
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_WDT_IRQ_TIME);
@@ -459,28 +453,28 @@ void aee_wdt_atf_info(unsigned int cpu, struct pt_regs *regs)
 	/* avoid lock prove to dump_stack in __debug_locks_off() */
 	xchg(&debug_locks, 0);
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_WDT_IRQ_DONE);
-
+	aee_rr_rec_exp_type(1);
 	BUG();
 }
 
 void notrace aee_wdt_atf_entry(void)
 {
+#ifdef CONFIG_ARM64
 	int i;
+#endif
 	void *regs;
 	struct pt_regs pregs;
 	int cpu = get_HW_cpuid();
 
 	if (atf_aee_debug_virt_addr) {
-		regs = (void *) (atf_aee_debug_virt_addr + 
-				(cpu * sizeof(struct atf_aee_regs)));
+		regs = (void *)(atf_aee_debug_virt_addr + (cpu * sizeof(struct atf_aee_regs)));
 
 #ifdef CONFIG_ARM64
 		pregs.pstate = ((struct atf_aee_regs *)regs)->pstate;
 		pregs.pc = ((struct atf_aee_regs *)regs)->pc;
 		pregs.sp = ((struct atf_aee_regs *)regs)->sp;
-		for (i=0; i<31 ;i++) {
-			pregs.regs[i] = ((struct atf_aee_regs *)regs)->regs[i];;
-		}
+		for (i = 0; i < 31; i++)
+			pregs.regs[i] = ((struct atf_aee_regs *)regs)->regs[i];
 #else
 		pregs.ARM_cpsr = (unsigned long)((struct atf_aee_regs *)regs)->pstate;
 		pregs.ARM_pc = (unsigned long)((struct atf_aee_regs *)regs)->pc;
@@ -512,39 +506,39 @@ static int __init aee_wdt_init(void)
 	phys_addr_t atf_aee_debug_phy_addr;
 
 	atomic_set(&wdt_enter_fiq, 0);
-	for (i = 0; i < num_possible_cpus(); i++) {
+	for (i = 0; i < NR_CPUS; i++) {
 		wdt_percpu_log_buf[i] = kzalloc(WDT_PERCPU_LOG_SIZE, GFP_KERNEL);
-		if (wdt_percpu_log_buf[i] == NULL) {
+		if (wdt_percpu_log_buf[i] == NULL)
 			LOGE("\n aee_common_init : kmalloc fail\n");
-		}
 		wdt_percpu_log_length[i] = 0;
 		wdt_percpu_preempt_cnt[i] = 0;
 	}
-	memset(wdt_log_buf, 0, sizeof(wdt_log_buf));
-	memset(regs_buffer_bin, 0, sizeof(regs_buffer_bin));
-	memset(stacks_buffer_bin, 0, sizeof(stacks_buffer_bin));
-	memset(wdt_percpu_stackframe, 0, sizeof(wdt_percpu_stackframe));
+	memset_io(wdt_log_buf, 0, sizeof(wdt_log_buf));
+	memset_io(regs_buffer_bin, 0, sizeof(regs_buffer_bin));
+	memset_io(stacks_buffer_bin, 0, sizeof(stacks_buffer_bin));
+	memset_io(wdt_percpu_stackframe, 0, sizeof(wdt_percpu_stackframe));
 
 	/* send SMC to ATF to register call back function */
 #ifdef CONFIG_ARM64
-	atf_aee_debug_phy_addr = (phys_addr_t) (0x00000000FFFFFFFF & 
-				mt_secure_call(MTK_SIP_KERNEL_WDT, (u64)&aee_wdt_atf_entry, 0, 0));
+	atf_aee_debug_phy_addr = (phys_addr_t) (0x00000000FFFFFFFF &
+						mt_secure_call(MTK_SIP_KERNEL_WDT,
+							       (u64) &aee_wdt_atf_entry, 0, 0));
 #else
-	atf_aee_debug_phy_addr = (phys_addr_t) 
-				mt_secure_call(MTK_SIP_KERNEL_WDT, (u32)&aee_wdt_atf_entry, 0, 0);
+	atf_aee_debug_phy_addr = (phys_addr_t)
+	    mt_secure_call(MTK_SIP_KERNEL_WDT, (u32) &aee_wdt_atf_entry, 0, 0);
 #endif
-	LOGD("\n MTK_SIP_KERNEL_WDT - 0x%p \n", &aee_wdt_atf_entry);
+	LOGD("\n MTK_SIP_KERNEL_WDT - 0x%p\n", &aee_wdt_atf_entry);
 
 	if ((atf_aee_debug_phy_addr == 0) || (atf_aee_debug_phy_addr == 0xFFFFFFFF)) {
-		LOGE("\n invalid atf_aee_debug_phy_addr \n");
+		LOGE("\n invalid atf_aee_debug_phy_addr\n");
 	} else {
 		/* use the last 16KB in ATF log buffer */
-		atf_aee_debug_virt_addr = ioremap(atf_aee_debug_phy_addr, 
-						ATF_AEE_DEBUG_BUF_LENGTH);
-		LOGD("\n atf_aee_debug_virt_addr = 0x%p  \n", atf_aee_debug_virt_addr);
+		atf_aee_debug_virt_addr = ioremap(atf_aee_debug_phy_addr, ATF_AEE_DEBUG_BUF_LENGTH);
+		LOGD("\n atf_aee_debug_virt_addr = 0x%p\n", atf_aee_debug_virt_addr);
 		if (atf_aee_debug_virt_addr)
-			memset(atf_aee_debug_virt_addr, 0, ATF_AEE_DEBUG_BUF_LENGTH);
+			memset_io(atf_aee_debug_virt_addr, 0, ATF_AEE_DEBUG_BUF_LENGTH);
 	}
 	return 0;
 }
+
 module_init(aee_wdt_init);

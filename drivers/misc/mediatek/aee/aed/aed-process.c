@@ -5,18 +5,18 @@
 #include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/spinlock.h>
-#include <linux/stacktrace.h>
 #include <linux/linkage.h>
 #include <linux/atomic.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
 #include <linux/mm.h>
+#include <linux/stacktrace.h>
 #include <asm/memory.h>
 #include <asm/stacktrace.h>
 #include <asm/traps.h>
 #include <linux/semaphore.h>
 #include <linux/delay.h>
-#include <linux/mrdump.h>
+#include <mrdump.h>
 #include "aed.h"
 
 struct bt_sync {
@@ -34,11 +34,10 @@ static void per_cpu_get_bt(void *info)
 
 	atomic_dec(&s->cpus_report);
 	while (atomic_read(&s->cpus_lock) == 1) {
-		if (timeout_max-- > 0) {
+		if (timeout_max-- > 0)
 			udelay(1);
-		} else {
+		else
 			break;
-		}
 	}
 	atomic_dec(&s->cpus_report);
 }
@@ -46,12 +45,11 @@ static void per_cpu_get_bt(void *info)
 static int aed_save_trace(struct stackframe *frame, void *d)
 {
 	struct aee_process_bt *trace = d;
-	unsigned long addr = frame->pc;
 	unsigned int id = trace->nr_entries;
-	struct pt_regs *excp_regs;
 	/* use static var, not support concurrency */
 	static unsigned long stack;
 	int ret = 0;
+
 	if (id >= AEE_NR_FRAME)
 		return -1;
 	if (id == 0)
@@ -94,8 +92,8 @@ static void aed_get_bt(struct task_struct *tsk, struct aee_process_bt *bt)
 	memset(&frame, 0, sizeof(struct stackframe));
 	if (tsk != current) {
 		frame.fp = thread_saved_fp(tsk);
-		frame.sp = thread_saved_sp(tsk);	
-#ifdef __aarch64__	
+		frame.sp = thread_saved_sp(tsk);
+#ifdef __aarch64__
 		frame.pc = thread_saved_pc(tsk);
 #else
 		frame.lr = thread_saved_pc(tsk);
@@ -114,11 +112,10 @@ static void aed_get_bt(struct task_struct *tsk, struct aee_process_bt *bt)
 #endif
 	}
 	stack_address = ALIGN(frame.sp, THREAD_SIZE);
-	if ((stack_address >= (PAGE_OFFSET + THREAD_SIZE)) && virt_addr_valid(stack_address)) {
+	if ((stack_address >= (PAGE_OFFSET + THREAD_SIZE)) && virt_addr_valid(stack_address))
 		walk_stackframe(&frame, aed_save_trace, bt);
-	} else {
+	else
 		LOGD("%s: Invalid sp value %lx\n", __func__, frame.sp);
-	}
 }
 
 static DEFINE_SEMAPHORE(process_bt_sem);
@@ -130,9 +127,8 @@ int aed_get_process_bt(struct aee_process_bt *bt)
 	struct task_struct *task;
 	int timeout_max = 500000;
 
-	if (down_interruptible(&process_bt_sem) < 0) {
+	if (down_interruptible(&process_bt_sem) < 0)
 		return -ERESTARTSYS;
-	}
 
 	err = 0;
 	if (bt->pid > 0) {
@@ -167,11 +163,10 @@ int aed_get_process_bt(struct aee_process_bt *bt)
 	smp_call_function(per_cpu_get_bt, &s, 0);
 
 	while (atomic_read(&s.cpus_report) != 0) {
-		if (timeout_max-- > 0) {
+		if (timeout_max-- > 0)
 			udelay(1);
-		} else {
+		else
 			break;
-		}
 	}
 
 	aed_get_bt(task, bt);
@@ -180,17 +175,16 @@ int aed_get_process_bt(struct aee_process_bt *bt)
 	atomic_set(&s.cpus_lock, 0);
 	timeout_max = 500000;
 	while (atomic_read(&s.cpus_report) != 0) {
-		if (timeout_max-- > 0) {
+		if (timeout_max-- > 0)
 			udelay(1);
-		} else {
+		else
 			break;
-		}
 	}
 
 	preempt_enable();
 	put_online_cpus();
 
- exit:
+exit:
 	up(&process_bt_sem);
 	return err;
 

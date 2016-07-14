@@ -33,21 +33,6 @@
 
 #include "mtdcore.h"
 
-#define DYNAMIC_CHANGE_MTD_WRITEABLE
-#ifdef DYNAMIC_CHANGE_MTD_WRITEABLE //wschen 2011-01-05
-#include <linux/proc_fs.h>
-#include <asm/uaccess.h>
-static struct mtd_info *my_mtd = NULL;
-int mtd_writeable_proc_write(struct file *file, const char *buffer, unsigned long count, void *data);
-
-struct mtd_change {
-    uint64_t size;
-    uint64_t offset;
-};
-int mtd_change_proc_write(struct file *file, const char *buffer, unsigned long count, void *data);
-#endif
-
-
 /* Our partition linked list */
 static LIST_HEAD(mtd_partitions);
 static DEFINE_MUTEX(mtd_partitions_mutex);
@@ -165,11 +150,12 @@ static int part_read_user_prot_reg(struct mtd_info *mtd, loff_t from,
 						 retlen, buf);
 }
 
-static int part_get_user_prot_info(struct mtd_info *mtd,
-		struct otp_info *buf, size_t len)
+static int part_get_user_prot_info(struct mtd_info *mtd, size_t len,
+				   size_t *retlen, struct otp_info *buf)
 {
 	struct mtd_part *part = PART(mtd);
-	return part->master->_get_user_prot_info(part->master, buf, len);
+	return part->master->_get_user_prot_info(part->master, len, retlen,
+						 buf);
 }
 
 static int part_read_fact_prot_reg(struct mtd_info *mtd, loff_t from,
@@ -180,11 +166,12 @@ static int part_read_fact_prot_reg(struct mtd_info *mtd, loff_t from,
 						 retlen, buf);
 }
 
-static int part_get_fact_prot_info(struct mtd_info *mtd, struct otp_info *buf,
-		size_t len)
+static int part_get_fact_prot_info(struct mtd_info *mtd, size_t len,
+				   size_t *retlen, struct otp_info *buf)
 {
 	struct mtd_part *part = PART(mtd);
-	return part->master->_get_fact_prot_info(part->master, buf, len);
+	return part->master->_get_fact_prot_info(part->master, len, retlen,
+						 buf);
 }
 
 static int part_write(struct mtd_info *mtd, loff_t to, size_t len,
@@ -303,6 +290,13 @@ static void part_resume(struct mtd_info *mtd)
 	part->master->_resume(part->master);
 }
 
+static int part_block_isreserved(struct mtd_info *mtd, loff_t ofs)
+{
+	struct mtd_part *part = PART(mtd);
+	ofs += part->offset;
+	return part->master->_block_isreserved(part->master, ofs);
+}
+
 static int part_block_isbad(struct mtd_info *mtd, loff_t ofs)
 {
 	struct mtd_part *part = PART(mtd);
@@ -341,8 +335,8 @@ int del_mtd_partitions(struct mtd_info *master)
 	mutex_lock(&mtd_partitions_mutex);
 	list_for_each_entry_safe(slave, next, &mtd_partitions, list)
 		if (slave->master == master) {
-#ifdef DYNAMIC_CHANGE_MTD_WRITEABLE //wschen 2011-01-05
-                        my_mtd = NULL;
+#ifdef DYNAMIC_CHANGE_MTD_WRITEABLE /* wschen 2011-01-05 */
+			my_mtd = NULL;
 #endif
 
 			ret = del_mtd_device(&slave->mtd);
@@ -439,6 +433,8 @@ static struct mtd_part *allocate_partition(struct mtd_info *master,
 		slave->mtd._unlock = part_unlock;
 	if (master->_is_locked)
 		slave->mtd._is_locked = part_is_locked;
+	if (master->_block_isreserved)
+		slave->mtd._block_isreserved = part_block_isreserved;
 	if (master->_block_isbad)
 		slave->mtd._block_isbad = part_block_isbad;
 	if (master->_block_markbad)
@@ -535,6 +531,7 @@ static struct mtd_part *allocate_partition(struct mtd_info *master,
 	}
 
 	slave->mtd.ecclayout = master->ecclayout;
+	slave->mtd.ecc_step_size = master->ecc_step_size;
 	slave->mtd.ecc_strength = master->ecc_strength;
 	slave->mtd.bitflip_threshold = master->bitflip_threshold;
 
@@ -542,7 +539,9 @@ static struct mtd_part *allocate_partition(struct mtd_info *master,
 		uint64_t offs = 0;
 
 		while (offs < slave->mtd.size) {
-			if (mtd_block_isbad(master, offs + slave->offset))
+			if (mtd_block_isreserved(master, offs + slave->offset))
+				slave->mtd.ecc_stats.bbtblocks++;
+			else if (mtd_block_isbad(master, offs + slave->offset))
 				slave->mtd.ecc_stats.badblocks++;
 			offs += slave->mtd.erasesize;
 		}
@@ -552,7 +551,7 @@ out_register:
 	return slave;
 }
 
-int mtd_add_partition(struct mtd_info *master, char *name,
+int mtd_add_partition(struct mtd_info *master, const char *name,
 		      long long offset, long long length)
 {
 	struct mtd_partition part;
@@ -664,8 +663,8 @@ int add_mtd_partitions(struct mtd_info *master,
 
 		cur_offset = slave->offset + slave->mtd.size;
 	}
-#ifdef DYNAMIC_CHANGE_MTD_WRITEABLE //wschen 2011-01-05
-        my_mtd = master;
+#ifdef DYNAMIC_CHANGE_MTD_WRITEABLE /* wschen 2011-01-05 */
+	my_mtd = master;
 #endif
 	return 0;
 }
@@ -692,22 +691,19 @@ static struct mtd_part_parser *get_partition_parser(const char *name)
 
 #define put_partition_parser(p) do { module_put((p)->owner); } while (0)
 
-int register_mtd_parser(struct mtd_part_parser *p)
+void register_mtd_parser(struct mtd_part_parser *p)
 {
 	spin_lock(&part_parser_lock);
 	list_add(&p->list, &part_parsers);
 	spin_unlock(&part_parser_lock);
-
-	return 0;
 }
 EXPORT_SYMBOL_GPL(register_mtd_parser);
 
-int deregister_mtd_parser(struct mtd_part_parser *p)
+void deregister_mtd_parser(struct mtd_part_parser *p)
 {
 	spin_lock(&part_parser_lock);
 	list_del(&p->list);
 	spin_unlock(&part_parser_lock);
-	return 0;
 }
 EXPORT_SYMBOL_GPL(deregister_mtd_parser);
 
@@ -789,6 +785,7 @@ EXPORT_SYMBOL_GPL(mtd_is_partition);
 u64 mtd_partition_start_address(struct mtd_info *mtd)
 {
 	struct mtd_part *part = PART(mtd);
+
 	return part->offset;
 }
 EXPORT_SYMBOL_GPL(mtd_partition_start_address);
@@ -804,87 +801,81 @@ uint64_t mtd_get_device_size(const struct mtd_info *mtd)
 }
 EXPORT_SYMBOL_GPL(mtd_get_device_size);
 
-#ifdef DYNAMIC_CHANGE_MTD_WRITEABLE //wschen 2011-01-05
+#ifdef DYNAMIC_CHANGE_MTD_WRITEABLE /* wschen 2011-01-05 */
 int mtd_writeable_proc_write(struct file *file, const char *buffer, unsigned long count, void *data)
 {
-    char buf[3];
+	char buf[3];
 
-    if (count != 3) {
-        return -EFAULT;
-    }
+	if (count != 3)
+		return -EFAULT;
 
-    if (copy_from_user(buf, buffer, 3)) {
-        return -EFAULT;
-    }
+	if (copy_from_user(buf, buffer, 3))
+		return -EFAULT;
 
-    if ((buf[0] != 0) || (buf[1] != 0) || (buf[2] != 0)) {
-        return -EFAULT;
-    }
+	if ((buf[0] != 0) || (buf[1] != 0) || (buf[2] != 0))
+		return -EFAULT;
 
-    if (my_mtd) {
+	if (my_mtd) {
 
-        struct mtd_part *slave, *next;
+		struct mtd_part *slave, *next;
 
-        list_for_each_entry_safe(slave, next, &mtd_partitions, list)
-            if (slave->master == my_mtd) {
-                slave->mtd.flags |= MTD_WRITEABLE;
-            }
-    }
+		list_for_each_entry_safe(slave, next, &mtd_partitions, list)
+			if (slave->master == my_mtd)
+				slave->mtd.flags |= MTD_WRITEABLE;
+	}
 
-    return count;
+	return count;
 }
 
 #define MTD_CHANGE_NUM 4
 int mtd_change_proc_write(struct file *file, const char *buffer, unsigned long count, void *data)
 {
-    struct mtd_change mtd_change[MTD_CHANGE_NUM];
-    int write_3 = 0;
+	struct mtd_change mtd_change[MTD_CHANGE_NUM];
+	int write_3 = 0;
 
-    if (count == (sizeof(struct mtd_change) * (MTD_CHANGE_NUM - 1))) {
-        write_3 = 1;
-    } else if (count != (sizeof(struct mtd_change) * MTD_CHANGE_NUM)) {
-        return -EFAULT;
-    }
+	if (count == (sizeof(struct mtd_change) * (MTD_CHANGE_NUM - 1)))
+		write_3 = 1;
+	else if (count != (sizeof(struct mtd_change) * MTD_CHANGE_NUM))
+		return -EFAULT;
 
-    if (copy_from_user(mtd_change, buffer, count)) {
-        return -EFAULT;
-    }
+	if (copy_from_user(mtd_change, buffer, count))
+		return -EFAULT;
 
-    if (my_mtd) {
-        struct mtd_part *slave, *next;
-        
-        list_for_each_entry_safe(slave, next, &mtd_partitions, list)
-            if (slave->master == my_mtd) {
-                if (write_3 == 1) {
-                    if (strncmp(slave->mtd.name, "system", strlen(slave->mtd.name)) == 0) {
-                        slave->mtd.size = mtd_change[0].size;
-                        slave->offset = mtd_change[0].offset;
-                    } else if (strncmp(slave->mtd.name, "cache", strlen(slave->mtd.name)) == 0) {
-                        slave->mtd.size = mtd_change[1].size;
-                        slave->offset = mtd_change[1].offset;
-                    } else if (strncmp(slave->mtd.name, "userdata", strlen(slave->mtd.name)) == 0) {
-                        slave->mtd.size = mtd_change[2].size;
-                        slave->offset = mtd_change[2].offset;
-                    }
-                } else {
-                    //4 arguments
-                    if (strncmp(slave->mtd.name, "expdb", strlen(slave->mtd.name)) == 0) {
-                        slave->mtd.size = mtd_change[0].size;
-                        slave->offset = mtd_change[0].offset;
-                    } else if (strncmp(slave->mtd.name, "system", strlen(slave->mtd.name)) == 0) {
-                        slave->mtd.size = mtd_change[1].size;
-                        slave->offset = mtd_change[1].offset;
-                    } else if (strncmp(slave->mtd.name, "cache", strlen(slave->mtd.name)) == 0) {
-                        slave->mtd.size = mtd_change[2].size;
-                        slave->offset = mtd_change[2].offset;
-                    } else if (strncmp(slave->mtd.name, "userdata", strlen(slave->mtd.name)) == 0) {
-                        slave->mtd.size = mtd_change[3].size;
-                        slave->offset = mtd_change[3].offset;
-                    }
-                }
-            }
-    }
+	if (my_mtd) {
+		struct mtd_part *slave, *next;
 
-    return count;
+		list_for_each_entry_safe(slave, next, &mtd_partitions, list)
+			if (slave->master == my_mtd) {
+				if (write_3 == 1) {
+					if (strncmp(slave->mtd.name, "system", strlen(slave->mtd.name)) == 0) {
+						slave->mtd.size = mtd_change[0].size;
+						slave->offset = mtd_change[0].offset;
+					} else if (strncmp(slave->mtd.name, "cache", strlen(slave->mtd.name)) == 0) {
+						slave->mtd.size = mtd_change[1].size;
+						slave->offset = mtd_change[1].offset;
+					} else if (strncmp(slave->mtd.name, "userdata", strlen(slave->mtd.name)) == 0) {
+						slave->mtd.size = mtd_change[2].size;
+						slave->offset = mtd_change[2].offset;
+					}
+				} else {
+					/* 4 arguments */
+					if (strncmp(slave->mtd.name, "expdb", strlen(slave->mtd.name)) == 0) {
+						slave->mtd.size = mtd_change[0].size;
+						slave->offset = mtd_change[0].offset;
+					} else if (strncmp(slave->mtd.name, "system", strlen(slave->mtd.name)) == 0) {
+						slave->mtd.size = mtd_change[1].size;
+						slave->offset = mtd_change[1].offset;
+					} else if (strncmp(slave->mtd.name, "cache", strlen(slave->mtd.name)) == 0) {
+						slave->mtd.size = mtd_change[2].size;
+						slave->offset = mtd_change[2].offset;
+					} else if (strncmp(slave->mtd.name, "userdata", strlen(slave->mtd.name)) == 0) {
+						slave->mtd.size = mtd_change[3].size;
+						slave->offset = mtd_change[3].offset;
+					}
+				}
+			}
+	}
+
+	return count;
 }
 #endif

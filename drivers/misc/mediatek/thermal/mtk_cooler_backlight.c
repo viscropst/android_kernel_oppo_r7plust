@@ -10,13 +10,9 @@
 #include <linux/types.h>
 #include <linux/kobject.h>
 
-#include "mach/mtk_thermal_monitor.h"
+#include "mt-plat/mtk_thermal_monitor.h"
 
-/* This API function is implemented in mediatek/kernel/drivers/leds/leds.c */
-extern int setMaxbrightness(int max_level, int enable);
-
-#define mtk_cooler_backlight_dprintk(fmt, args...) \
-  do { pr_debug("thermal/cooler/backlight " fmt, ##args); } while (0)
+#define mtk_cooler_backlight_dprintk(fmt, args...) pr_debug("thermal/cooler/backlight " fmt, ##args)
 
 #define BACKLIGHT_COOLER_NR 3
 
@@ -85,9 +81,8 @@ static int mtk_cl_backlight_set_cur_state(struct thermal_cooling_device *cdev, u
 	g_cl_backlight_state[nCoolerId] = state;
 
 	g_backlight_level = 0;
-	for (i = 0; i < BACKLIGHT_COOLER_NR; i++) {
+	for (i = 0; i < BACKLIGHT_COOLER_NR; i++)
 		g_backlight_level += g_cl_backlight_state[i];
-	}
 
 /* Mark for test */
 /* if(g_backlight_last_level != g_backlight_level) */
@@ -102,7 +97,8 @@ static int mtk_cl_backlight_set_cur_state(struct thermal_cooling_device *cdev, u
 
 		g_backlight_last_level = g_backlight_level;
 
-		/* mtk_cooler_backlight_dprintk("mtk_cl_backlight_set_cur_state() event:%s g_backlight_level:%d\n", event, g_backlight_level); */
+		/* mtk_cooler_backlight_dprintk("mtk_cl_backlight_set_cur_state() event:%s g_backlight_level:%d\n",
+			 event, g_backlight_level); */
 
 	}
 
@@ -119,6 +115,7 @@ static struct thermal_cooling_device_ops mtk_cl_backlight_ops = {
 static int mtk_cooler_backlight_register_ltf(void)
 {
 	int i;
+
 	mtk_cooler_backlight_dprintk("register ltf\n");
 
 	for (i = 0; i < BACKLIGHT_COOLER_NR; i++) {
@@ -126,7 +123,7 @@ static int mtk_cooler_backlight_register_ltf(void)
 
 		sprintf(temp, "mtk-cl-backlight%02d", i + 1);	/* /< Cooler Name: mtk-cl-backlight01 */
 		g_cl_id[i] = i;
-		cl_backlight_dev[i] = mtk_thermal_cooling_device_register(temp, (void *)&g_cl_id[i],	/* /< 0, 1, 2 ... */
+		cl_backlight_dev[i] = mtk_thermal_cooling_device_register(temp, (void *)&g_cl_id[i],
 									  &mtk_cl_backlight_ops);
 	}
 
@@ -136,6 +133,7 @@ static int mtk_cooler_backlight_register_ltf(void)
 static void mtk_cooler_backlight_unregister_ltf(void)
 {
 	int i;
+
 	mtk_cooler_backlight_dprintk("unregister ltf\n");
 
 	for (i = 0; i < BACKLIGHT_COOLER_NR; i++) {

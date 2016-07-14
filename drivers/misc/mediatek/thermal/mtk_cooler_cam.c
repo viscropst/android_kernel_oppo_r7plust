@@ -3,8 +3,6 @@
 #endif
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-
-
 #include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -14,14 +12,12 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <asm/uaccess.h>
-#include "mach/mtk_thermal_monitor.h"
-
+#include "mt-plat/mtk_thermal_monitor.h"
 
 #define MAX_NUM_INSTANCE_MTK_COOLER_CAM  1
 
 #if 1
-#define mtk_cooler_cam_dprintk(fmt, args...) \
-  do { pr_debug("thermal/cooler/cam " fmt, ##args); } while (0)
+#define mtk_cooler_cam_dprintk(fmt, args...) pr_debug("thermal/cooler/cam " fmt, ##args)
 #else
 #define mtk_cooler_cam_dprintk(fmt, args...)
 #endif
@@ -39,9 +35,8 @@ static ssize_t _cl_cam_write(struct file *filp, const char __user *buf, size_t l
 	char tmp[MAX_LEN] = { 0 };
 
 	/* write data to the buffer */
-	if (copy_from_user(tmp, buf, len)) {
+	if (copy_from_user(tmp, buf, len))
 		return -EFAULT;
-	}
 
 	ret = kstrtouint(tmp, 10, &_cl_cam);
 	if (ret)
@@ -62,11 +57,7 @@ static int _cl_cam_read(struct seq_file *m, void *v)
 
 static int _cl_cam_open(struct inode *inode, struct file *file)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
 	return single_open(file, _cl_cam_read, PDE_DATA(inode));
-#else
-	return single_open(file, _cl_cam_read, PDE(inode)->data);
-#endif
 }
 
 static const struct file_operations _cl_cam_fops = {
@@ -98,11 +89,10 @@ static int mtk_cl_cam_set_cur_state(struct thermal_cooling_device *cdev, unsigne
 
 	*((unsigned long *)cdev->devdata) = state;
 
-	if (1 == state) {
+	if (1 == state)
 		_cl_cam = 1;
-	} else {
+	else
 		_cl_cam = 0;
-	}
 
 	return 0;
 }
@@ -117,10 +107,12 @@ static struct thermal_cooling_device_ops mtk_cl_cam_ops = {
 static int mtk_cooler_cam_register_ltf(void)
 {
 	int i;
+
 	mtk_cooler_cam_dprintk("register ltf\n");
 
 	for (i = MAX_NUM_INSTANCE_MTK_COOLER_CAM; i-- > 0;) {
 		char temp[20] = { 0 };
+
 		sprintf(temp, "mtk-cl-cam%02d", i);
 		cl_cam_dev[i] = mtk_thermal_cooling_device_register(temp,
 								    (void *)&cl_cam_state[i],
@@ -133,6 +125,7 @@ static int mtk_cooler_cam_register_ltf(void)
 static void mtk_cooler_cam_unregister_ltf(void)
 {
 	int i;
+
 	mtk_cooler_cam_dprintk("unregister ltf\n");
 
 	for (i = MAX_NUM_INSTANCE_MTK_COOLER_CAM; i-- > 0;) {
@@ -168,9 +161,8 @@ static int __init mtk_cooler_cam_init(void)
 		}
 #endif
 		entry = proc_create("driver/cl_cam", S_IRUGO | S_IWUSR, NULL, &_cl_cam_fops);
-		if (!entry) {
+		if (!entry)
 			mtk_cooler_cam_dprintk("%s driver/cl_cam creation failed\n", __func__);
-		}
 	}
 
 	err = mtk_cooler_cam_register_ltf();

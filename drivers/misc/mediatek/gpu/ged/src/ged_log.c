@@ -5,9 +5,10 @@
 #include <linux/genalloc.h>
 #include <linux/sched.h>
 #include <linux/mutex.h>
-#include <linux/xlog.h>
+//#include <linux/xlog.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/rtc.h>
 
 #include "ged_base.h"
 #include "ged_log.h"
@@ -17,7 +18,7 @@
 
 enum
 {
-    /* 0~7 reserved for internal buffer type */
+    /* 0x00 - 0xff reserved for internal buffer type */
 
     /* rewrite the oldest log when buffer is full */
     GED_LOG_ATTR_RINGBUFFER     = 0x1,
@@ -27,6 +28,16 @@ enum
     GED_LOG_ATTR_AUTO_INCREASE  = 0x4,
 };
 
+typedef struct GED_LOG_BUF_LINE_TAG
+{
+    int         offset;
+    int         tattrs;
+    long long   time;
+    long int    time_usec;
+    int         pid;
+    int         tid;
+} GED_LOG_BUF_LINE;
+
 typedef struct GED_LOG_BUF_TAG
 {
     GED_LOG_BUF_TYPE    eType;
@@ -35,7 +46,7 @@ typedef struct GED_LOG_BUF_TAG
     void                *pMemory;
     int                 i32MemorySize;
 
-    int                 *pi32Line;
+    GED_LOG_BUF_LINE    *psLine;
     char                *pcBuffer;
     int                 i32LineCount;
     int                 i32BufferSize;
@@ -56,13 +67,25 @@ typedef struct GED_LOG_BUF_TAG
 
 } GED_LOG_BUF;
 
+typedef struct GED_LOG_LISTEN_TAG
+{
+    GED_LOG_BUF_HANDLE  *pCBHnd;
+    char                acName[GED_LOG_BUF_NAME_LENGTH];
+    struct list_head    sList;
+} GED_LOG_LISTEN;
+
 typedef struct GED_LOG_BUF_LIST_TAG
 {
     rwlock_t sLock;
-    struct list_head sList;
+    struct list_head sList_buf;
+    struct list_head sList_listen;
 } GED_LOG_BUF_LIST;
 
-static GED_LOG_BUF_LIST gsGEDLogBufList;
+static GED_LOG_BUF_LIST gsGEDLogBufList = {
+    .sLock          = __RW_LOCK_UNLOCKED(gsGEDLogBufList.sLock),
+    .sList_buf      = LIST_HEAD_INIT(gsGEDLogBufList.sList_buf),
+    .sList_listen   = LIST_HEAD_INIT(gsGEDLogBufList.sList_listen), 
+};
 
 static struct dentry* gpsGEDLogEntry = NULL;
 static struct dentry* gpsGEDLogBufsDir = NULL;
@@ -81,9 +104,8 @@ static GED_LOG_BUF* ged_log_buf_from_handle(GED_LOG_BUF_HANDLE hLogBuf)
 
 static GED_ERROR __ged_log_buf_vprint(GED_LOG_BUF *psGEDLogBuf, const char *fmt, va_list args, int attrs)
 {
-    int buf_n_r;
     int buf_n;
-    char *buf;
+    int len;
 
     if (!psGEDLogBuf)
         return GED_OK;
@@ -104,9 +126,26 @@ static GED_ERROR __ged_log_buf_vprint(GED_LOG_BUF *psGEDLogBuf, const char *fmt,
         {
             if (attrs & GED_LOG_ATTR_AUTO_INCREASE)
             {
-                /* calc the avg. and incease the space by 2048 line */
-                // TODO
-                //ged_log_buf_resize(psGEDLogBuf->ui32HashNodeID, psGEDLogBuf->i32LineCount + psGEDLogBuf->i32LineCountOrg);
+                int newLineCount, newBufferSize; 
+
+                /* incease min(25%, 1MB) */
+                if ((psGEDLogBuf->i32LineCount >> 2) <= 1024 * 1024)
+                {
+                    newLineCount = psGEDLogBuf->i32LineCount + (psGEDLogBuf->i32LineCount >> 2);
+                    newBufferSize = psGEDLogBuf->i32BufferSize + (psGEDLogBuf->i32BufferSize >> 2);
+                }
+                else
+                {
+                    newLineCount = psGEDLogBuf->i32LineCount + 4096;
+                    newBufferSize = psGEDLogBuf->i32BufferSize + 1024 * 1024;
+                }
+
+                spin_unlock_irqrestore(&psGEDLogBuf->sSpinLock, psGEDLogBuf->ui32IRQFlags);
+                if (ged_log_buf_resize(psGEDLogBuf->ui32HashNodeID, newLineCount, newBufferSize) != GED_OK)
+                {
+                    return GED_ERROR_OOM;
+                }
+                spin_lock_irqsave(&psGEDLogBuf->sSpinLock, psGEDLogBuf->ui32IRQFlags);
             }
             else
             {
@@ -117,63 +156,68 @@ static GED_ERROR __ged_log_buf_vprint(GED_LOG_BUF *psGEDLogBuf, const char *fmt,
         }
     }
 
-    buf_n = psGEDLogBuf->i32BufferSize - psGEDLogBuf->i32BufferCurrent;
-    buf = psGEDLogBuf->pcBuffer + psGEDLogBuf->i32BufferCurrent;
+    psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].offset = psGEDLogBuf->i32BufferCurrent;
+    psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].tattrs = 0;
+    psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].time = 0;
 
-    psGEDLogBuf->pi32Line[psGEDLogBuf->i32LineCurrent] = psGEDLogBuf->i32BufferCurrent;
-
-    /* print the kernel time */
+    /* record the kernel time */
     if (attrs & GED_LOG_ATTR_TIME)
     {
-        unsigned long long t;
-        unsigned long nanosec_rem;
-
-        t = cpu_clock(smp_processor_id());
-        nanosec_rem = do_div(t, 1000000000);
-
-        buf_n_r = snprintf(buf, buf_n, "[%5lu.%06lu] ", (unsigned long) t, nanosec_rem / 1000);
-
-        if (buf_n_r > buf_n) buf_n_r = buf_n;
-
-        buf_n -= buf_n_r;
-        buf += buf_n_r;
+        psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].tattrs = GED_LOG_ATTR_TIME;
+        psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].time = ged_get_time();
     }
 
-    buf_n_r = vsnprintf(buf, buf_n, fmt, args);
+    /* record the user time */
+    if (attrs & GED_LOG_ATTR_TIME_TPT)
+    {
+        struct timeval time;
+        unsigned long local_time;
 
-    if (buf_n_r > buf_n) buf_n_r = buf_n;
+        do_gettimeofday(&time);
+        local_time = (u32)(time.tv_sec - (sys_tz.tz_minuteswest * 60));
 
-    buf_n -= buf_n_r;
-    buf += buf_n_r;
+        psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].tattrs = GED_LOG_ATTR_TIME_TPT;
+        psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].time = local_time;
+        psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].time_usec = time.tv_usec;
+        psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].pid = current->tgid;
+        psGEDLogBuf->psLine[psGEDLogBuf->i32LineCurrent].tid = current->pid;
+    }
+
+    buf_n = psGEDLogBuf->i32BufferSize - psGEDLogBuf->i32BufferCurrent;
+    len = vsnprintf(psGEDLogBuf->pcBuffer + psGEDLogBuf->i32BufferCurrent, buf_n, fmt, args);
+
+    if (len > buf_n) len = buf_n;
+
+    buf_n -= len;
 
     if (attrs & GED_LOG_ATTR_RINGBUFFER)
     {
         int i;
         int check = 10 + 1; /* we check the following 10 items. */ 
         int a = psGEDLogBuf->i32BufferCurrent;
-        int b = psGEDLogBuf->i32BufferSize - buf_n + 1;
+        int b = psGEDLogBuf->i32BufferCurrent + len + 2;
 
         for (i = psGEDLogBuf->i32LineCurrent+1; --check && i < psGEDLogBuf->i32LineCount; ++i)
         {
-            int pos = psGEDLogBuf->pi32Line[i];
+            int pos = psGEDLogBuf->psLine[i].offset;
             if (pos >= a && pos < b)
-                psGEDLogBuf->pi32Line[i] = -1;
+                psGEDLogBuf->psLine[i].offset = -1;
         }
 
         if (check && i == psGEDLogBuf->i32LineCount)
         {
             for (i = 0; --check && i < psGEDLogBuf->i32LineCurrent; ++i)
             {
-                int pos = psGEDLogBuf->pi32Line[i];
+                int pos = psGEDLogBuf->psLine[i].offset;
 
                 if (pos >= a && pos < b)
-                    psGEDLogBuf->pi32Line[i] = -1;
+                    psGEDLogBuf->psLine[i].offset = -1;
             }
         }
     }
 
     /* update current */
-    psGEDLogBuf->i32BufferCurrent = psGEDLogBuf->i32BufferSize - buf_n + 1;
+    psGEDLogBuf->i32BufferCurrent += len + 2;
     psGEDLogBuf->i32LineCurrent += 1;
 
     spin_unlock_irqrestore(&psGEDLogBuf->sSpinLock, psGEDLogBuf->ui32IRQFlags);
@@ -187,7 +231,7 @@ static GED_ERROR __ged_log_buf_print(GED_LOG_BUF *psGEDLogBuf, const char *fmt, 
     GED_ERROR err;
 
     va_start(args, fmt);
-    err = __ged_log_buf_vprint(psGEDLogBuf, fmt, args, psGEDLogBuf->attrs);
+    err = __ged_log_buf_vprint(psGEDLogBuf, fmt, args, psGEDLogBuf->attrs | GED_LOG_ATTR_TIME);
     va_end(args);
 
     return err;
@@ -207,9 +251,44 @@ static int __ged_log_buf_write(GED_LOG_BUF *psGEDLogBuf, const char __user *pszB
 
     ged_copy_from_user(buf, pszBuffer, cnt);
 
+    buf[cnt] = 0;
+    if (buf[cnt-1] == '\n')
+    {
+        buf[cnt-1] = 0;
+    }
+
     __ged_log_buf_print(psGEDLogBuf, buf);
 
     return cnt;
+}
+
+static void __ged_log_buf_check_get_early_list(GED_LOG_BUF_HANDLE hLogBuf, const char *pszName)
+{
+    struct list_head *psListEntry, *psListEntryTemp, *psList;
+    GED_LOG_LISTEN *psFound = NULL, *psLogListen;
+
+    read_lock_bh(&gsGEDLogBufList.sLock);
+
+    psList = &gsGEDLogBufList.sList_listen;
+    list_for_each_safe(psListEntry, psListEntryTemp, psList)
+    {
+        psLogListen = list_entry(psListEntry, GED_LOG_LISTEN, sList);
+        if (0 == strcmp(psLogListen->acName, pszName))
+        {
+            psFound = psLogListen;
+            break;
+        }
+    }
+
+    read_unlock_bh(&gsGEDLogBufList.sLock);
+
+    if (psFound)
+    {
+        write_lock_bh(&gsGEDLogBufList.sLock);
+        *psFound->pCBHnd = hLogBuf;
+        list_del(&psFound->sList);
+        write_unlock_bh(&gsGEDLogBufList.sLock);
+    }
 }
 
 static ssize_t ged_log_buf_write_entry(const char __user *pszBuffer, size_t uiCount, loff_t uiPosition, void *pvData)
@@ -240,6 +319,46 @@ static void* ged_log_buf_seq_next(struct seq_file *psSeqFile, void *pvData, loff
     return NULL;
 }
 //-----------------------------------------------------------------------------
+static int ged_log_buf_seq_show_print(struct seq_file *psSeqFile, GED_LOG_BUF *psGEDLogBuf, int i)
+{
+    int err = 0;
+    GED_LOG_BUF_LINE *line;
+
+    line = &psGEDLogBuf->psLine[i];
+
+    if (line->offset >= 0)
+    {
+        if (line->tattrs & GED_LOG_ATTR_TIME)
+        {
+            unsigned long long t;
+            unsigned long nanosec_rem;
+
+            t = line->time;                             
+            nanosec_rem = do_div(t, 1000000000);
+
+            seq_printf(psSeqFile,"[%5llu.%06lu] ", t, nanosec_rem / 1000);
+        }
+
+        if (line->tattrs & GED_LOG_ATTR_TIME_TPT)
+        {
+            unsigned long local_time;
+            struct rtc_time tm;
+
+            local_time = line->time; 
+            rtc_time_to_tm(local_time, &tm);
+
+            seq_printf(psSeqFile,"%02d-%02d %02d:%02d:%02d.%06lu %5d %5d ", 
+                /*tm.tm_year + 1900,*/ tm.tm_mon + 1, tm.tm_mday, 
+                tm.tm_hour, tm.tm_min, tm.tm_sec, 
+                line->time_usec, line->pid, line->tid);
+        }
+
+        err = seq_printf(psSeqFile, "%s\n", psGEDLogBuf->pcBuffer + line->offset);
+    }
+
+    return err;
+}
+
 static int ged_log_buf_seq_show(struct seq_file *psSeqFile, void *pvData)
 {
     GED_LOG_BUF *psGEDLogBuf = (GED_LOG_BUF *)pvData;
@@ -247,7 +366,6 @@ static int ged_log_buf_seq_show(struct seq_file *psSeqFile, void *pvData)
     if (psGEDLogBuf != NULL)
     {
         int i;
-        int attrs;
 
         spin_lock_irqsave(&psGEDLogBuf->sSpinLock, psGEDLogBuf->ui32IRQFlags);
 
@@ -261,37 +379,23 @@ static int ged_log_buf_seq_show(struct seq_file *psSeqFile, void *pvData)
         {
             for (i = psGEDLogBuf->i32LineCurrent; i < psGEDLogBuf->i32LineCount; ++i)
             {
-                int pos = psGEDLogBuf->pi32Line[i];
-
-                if (pos >= 0)
-                {
-                    if (0 != seq_printf(psSeqFile, "%s\n", psGEDLogBuf->pcBuffer + pos))
-                        break;
-                }
+                if (0 != ged_log_buf_seq_show_print(psSeqFile, psGEDLogBuf, i))
+                    break;
             }
 
             //seq_printf(psSeqFile, " > ---------- start over ----------\n");
 
             for (i = 0; i < psGEDLogBuf->i32LineCurrent; ++i)
             {
-                int pos = psGEDLogBuf->pi32Line[i];
-
-                if (pos >= 0)
-                {
-                    if (0 != seq_printf(psSeqFile, "%s\n", psGEDLogBuf->pcBuffer + pos))
-                        break;
-                }
+                if (0 != ged_log_buf_seq_show_print(psSeqFile, psGEDLogBuf, i))
+                    break;
             }
         }
         else if (psGEDLogBuf->attrs & GED_LOG_ATTR_QUEUEBUFFER)
         {
             for (i = 0; i < psGEDLogBuf->i32LineCount; ++i)
             {
-                int pos = psGEDLogBuf->pi32Line[i];
-
-                if (pos < 0)
-                    break;
-                if (0 != seq_printf(psSeqFile, "%s\n", psGEDLogBuf->pcBuffer + pos))
+                if (0 != ged_log_buf_seq_show_print(psSeqFile, psGEDLogBuf, i))
                     break;
             }
         }
@@ -347,7 +451,7 @@ GED_LOG_BUF_HANDLE ged_log_buf_alloc(
             break;
     }
 
-    psGEDLogBuf->i32MemorySize = i32MaxBufferSizeByte + sizeof(int) * i32MaxLineCount;
+    psGEDLogBuf->i32MemorySize = i32MaxBufferSizeByte + sizeof(GED_LOG_BUF_LINE) * i32MaxLineCount;
     psGEDLogBuf->pMemory = ged_alloc(psGEDLogBuf->i32MemorySize);
     if (NULL == psGEDLogBuf->pMemory)
     {
@@ -356,8 +460,8 @@ GED_LOG_BUF_HANDLE ged_log_buf_alloc(
         return (GED_LOG_BUF_HANDLE)0;
     }
 
-    psGEDLogBuf->pi32Line = (int *)psGEDLogBuf->pMemory;
-    psGEDLogBuf->pcBuffer = ((char *)psGEDLogBuf->pMemory) + sizeof(int) * i32MaxLineCount;
+    psGEDLogBuf->psLine = (GED_LOG_BUF_LINE *)psGEDLogBuf->pMemory;
+    psGEDLogBuf->pcBuffer = (char *)&psGEDLogBuf->psLine[i32MaxLineCount];
     psGEDLogBuf->i32LineCount = i32MaxLineCount;
     psGEDLogBuf->i32BufferSize = i32MaxBufferSizeByte;
     psGEDLogBuf->i32LineCurrent = 0;
@@ -372,7 +476,7 @@ GED_LOG_BUF_HANDLE ged_log_buf_alloc(
     {
         int i = 0;
         for (i = 0; i < psGEDLogBuf->i32LineCount; ++i)
-            psGEDLogBuf->pi32Line[i] = -1;
+            psGEDLogBuf->psLine[i].offset = -1;
     }
 
     if (pszName)
@@ -383,7 +487,7 @@ GED_LOG_BUF_HANDLE ged_log_buf_alloc(
     // Add into the global list
     INIT_LIST_HEAD(&psGEDLogBuf->sList);
     write_lock_bh(&gsGEDLogBufList.sLock);
-    list_add(&psGEDLogBuf->sList, &gsGEDLogBufList.sList);
+    list_add(&psGEDLogBuf->sList, &gsGEDLogBufList.sList_buf);
     write_unlock_bh(&gsGEDLogBufList.sLock);
 
     if (pszNodeName)
@@ -416,6 +520,8 @@ GED_LOG_BUF_HANDLE ged_log_buf_alloc(
 
     GED_LOGI("ged_log_buf_alloc OK\n");
 
+    __ged_log_buf_check_get_early_list(psGEDLogBuf->ui32HashNodeID, pszName);
+
     return (GED_LOG_BUF_HANDLE)psGEDLogBuf->ui32HashNodeID;
 }
 
@@ -424,16 +530,19 @@ GED_ERROR ged_log_buf_resize(
         int i32NewMaxLineCount,
         int i32NewMaxBufferSizeByte)
 {
+    int i;
     GED_LOG_BUF *psGEDLogBuf = ged_log_buf_from_handle(hLogBuf);
     int i32NewMemorySize, i32OldMemorySize;
     void *pNewMemory, *pOldMemory;
+    GED_LOG_BUF_LINE *pi32NewLine;
+    char *pcNewBuffer;
 
     if ((NULL == psGEDLogBuf) || (i32NewMaxLineCount <= 0) || (i32NewMaxBufferSizeByte <= 0))
     {
         return GED_ERROR_INVALID_PARAMS;
     }
 
-    i32NewMemorySize = i32NewMaxBufferSizeByte + sizeof(int) * i32NewMaxLineCount;
+    i32NewMemorySize = i32NewMaxBufferSizeByte + sizeof(GED_LOG_BUF_LINE) * i32NewMaxLineCount;
     pNewMemory = ged_alloc(i32NewMemorySize);
     if (NULL == pNewMemory)
     {
@@ -441,30 +550,30 @@ GED_ERROR ged_log_buf_resize(
     }
 
     spin_lock_irqsave(&psGEDLogBuf->sSpinLock, psGEDLogBuf->ui32IRQFlags);
-    {
-        int *pi32NewLine = (int *)pNewMemory;
-        char *pcNewBuffer = ((char *)pNewMemory) + sizeof(int) * i32NewMaxLineCount;
 
-        memcpy(pi32NewLine, psGEDLogBuf->pi32Line, sizeof(int) * min(i32NewMaxLineCount, psGEDLogBuf->i32LineCount));
-        {
-            int i;
-            for (i = psGEDLogBuf->i32LineCount + 1; i < i32NewMaxLineCount; ++i)
-            {
-                pi32NewLine[i] = -1;
-            }
-        }
-        memcpy(pcNewBuffer, psGEDLogBuf->pcBuffer, min(i32NewMaxBufferSizeByte, psGEDLogBuf->i32BufferSize));
+    pi32NewLine = (GED_LOG_BUF_LINE *)pNewMemory;
+    pcNewBuffer = (char *)&pi32NewLine[i32NewMaxLineCount];
 
-        i32OldMemorySize = psGEDLogBuf->i32MemorySize;
-        pOldMemory = psGEDLogBuf->pMemory;
+    memcpy(pi32NewLine, psGEDLogBuf->psLine, sizeof(GED_LOG_BUF_LINE) * min(i32NewMaxLineCount, psGEDLogBuf->i32LineCount));
+    memcpy(pcNewBuffer, psGEDLogBuf->pcBuffer, min(i32NewMaxBufferSizeByte, psGEDLogBuf->i32BufferSize));
 
-        psGEDLogBuf->i32MemorySize = i32NewMemorySize;
-        psGEDLogBuf->pMemory = pNewMemory;
-        psGEDLogBuf->pi32Line = pi32NewLine;
-        psGEDLogBuf->pcBuffer = pcNewBuffer;
-        psGEDLogBuf->i32LineCount = i32NewMaxLineCount;
-        psGEDLogBuf->i32BufferSize = i32NewMaxBufferSizeByte;
-    }
+    for (i = psGEDLogBuf->i32LineCount; i < i32NewMaxLineCount; ++i)
+        pi32NewLine[i].offset = -1;
+
+    i32OldMemorySize = psGEDLogBuf->i32MemorySize;
+    pOldMemory = psGEDLogBuf->pMemory;
+
+    psGEDLogBuf->i32MemorySize = i32NewMemorySize;
+    psGEDLogBuf->pMemory = pNewMemory;
+    psGEDLogBuf->psLine = pi32NewLine;
+    psGEDLogBuf->pcBuffer = pcNewBuffer;
+    psGEDLogBuf->i32LineCount = i32NewMaxLineCount;
+    psGEDLogBuf->i32BufferSize = i32NewMaxBufferSizeByte;
+
+    if (psGEDLogBuf->i32BufferCurrent >= i32NewMaxBufferSizeByte)
+        psGEDLogBuf->i32BufferCurrent = i32NewMaxBufferSizeByte - 1;
+    pcNewBuffer[psGEDLogBuf->i32BufferCurrent] = 0;
+
     spin_unlock_irqrestore(&psGEDLogBuf->sSpinLock, psGEDLogBuf->ui32IRQFlags);
     ged_free(pOldMemory, i32OldMemorySize);
 
@@ -475,34 +584,38 @@ GED_ERROR ged_log_buf_ignore_lines(GED_LOG_BUF_HANDLE hLogBuf, int n)
 {
     GED_LOG_BUF *psGEDLogBuf = ged_log_buf_from_handle(hLogBuf);
 
-    if (psGEDLogBuf)
+    if (psGEDLogBuf && n > 0)
     {
-        /* Only Queuebuffer support this function now */
         if (psGEDLogBuf->attrs & GED_LOG_ATTR_QUEUEBUFFER)
         {
-            if (n > psGEDLogBuf->i32LineCurrent)
+            if (n >= psGEDLogBuf->i32LineCurrent)
             {
+		/* reset all buffer */
                 ged_log_buf_reset(hLogBuf);
             }
             else
             {
                 int i;
-                int buf_start;
-                int buf_n;
+                int buf_offset;
+                int buf_size;
 
                 spin_lock_irqsave(&psGEDLogBuf->sSpinLock, psGEDLogBuf->ui32IRQFlags);
 
-                /* Move lines */
+                buf_offset = psGEDLogBuf->psLine[n].offset;
+                buf_size = psGEDLogBuf->i32BufferCurrent - buf_offset;
+
+                /* Move lines, update offset and update current */
                 for (i = 0; n + i < psGEDLogBuf->i32LineCount; ++i)
-                    psGEDLogBuf->pi32Line[i] = psGEDLogBuf->pi32Line[n + i];
+                {
+                    psGEDLogBuf->psLine[i] = psGEDLogBuf->psLine[n + i];
+                    psGEDLogBuf->psLine[i].offset -= buf_offset;
+                }
                 psGEDLogBuf->i32LineCurrent -= n;
 
-                /* Move buffers */
-                buf_start = psGEDLogBuf->pi32Line[n];
-                buf_n = psGEDLogBuf->i32BufferCurrent - buf_start;
-                for (i = 0; i < buf_n; ++i)
-                    psGEDLogBuf->pcBuffer[i] = psGEDLogBuf->pcBuffer[buf_start + i];
-                psGEDLogBuf->i32BufferCurrent = buf_n;
+                /* Move buffers and update current */
+                for (i = 0; i < buf_size; ++i)
+                    psGEDLogBuf->pcBuffer[i] = psGEDLogBuf->pcBuffer[buf_offset + i];
+                psGEDLogBuf->i32BufferCurrent = buf_size;
 
                 spin_unlock_irqrestore(&psGEDLogBuf->sSpinLock, psGEDLogBuf->ui32IRQFlags);
             }
@@ -515,7 +628,7 @@ GED_ERROR ged_log_buf_ignore_lines(GED_LOG_BUF_HANDLE hLogBuf, int n)
 GED_LOG_BUF_HANDLE ged_log_buf_get(const char* pszName)
 {
     struct list_head *psListEntry, *psListEntryTemp, *psList;
-    GED_LOG_BUF* psFound = NULL, *psLogBuf;
+    GED_LOG_BUF *psFound = NULL, *psLogBuf;
 
     if (!pszName)
     {
@@ -524,7 +637,7 @@ GED_LOG_BUF_HANDLE ged_log_buf_get(const char* pszName)
 
     read_lock_bh(&gsGEDLogBufList.sLock);
 
-    psList = &gsGEDLogBufList.sList;
+    psList = &gsGEDLogBufList.sList_buf;
     list_for_each_safe(psListEntry, psListEntryTemp, psList)
     {
         psLogBuf = list_entry(psListEntry, GED_LOG_BUF, sList);
@@ -544,6 +657,66 @@ GED_LOG_BUF_HANDLE ged_log_buf_get(const char* pszName)
 
     return (GED_LOG_BUF_HANDLE)psFound->ui32HashNodeID;
 }
+
+int ged_log_buf_get_early(const char* pszName, GED_LOG_BUF_HANDLE *callback_set_handle)
+{
+    int err = 0;
+
+    if (NULL == pszName)
+    {
+        return GED_ERROR_INVALID_PARAMS;
+    }
+
+    *callback_set_handle = ged_log_buf_get(pszName);
+
+    if (0 == *callback_set_handle)
+    {
+        GED_LOG_LISTEN *psGEDLogListen;
+
+        write_lock_bh(&gsGEDLogBufList.sLock);
+        
+        /* search again */
+        {
+            struct list_head *psListEntry, *psListEntryTemp, *psList;
+            GED_LOG_BUF *psFound = NULL, *psLogBuf;
+
+            psList = &gsGEDLogBufList.sList_buf;
+            list_for_each_safe(psListEntry, psListEntryTemp, psList)
+            {
+                psLogBuf = list_entry(psListEntry, GED_LOG_BUF, sList);
+                if (0 == strcmp(psLogBuf->acName, pszName))
+                {
+                    psFound = psLogBuf;
+                    break;
+                }
+            }
+
+            if (psFound)
+            {
+                *callback_set_handle = (GED_LOG_BUF_HANDLE)psFound->ui32HashNodeID;
+                goto exit_unlock;
+            }
+        }
+ 
+        /* add to listen list */
+        psGEDLogListen = (GED_LOG_LISTEN*)ged_alloc(sizeof(GED_LOG_LISTEN));
+        if (NULL == psGEDLogListen)
+        {
+            err = GED_ERROR_OOM;
+            goto exit_unlock;
+        }
+        psGEDLogListen->pCBHnd = callback_set_handle;
+        snprintf(psGEDLogListen->acName, GED_LOG_BUF_NAME_LENGTH, "%s", pszName);
+        INIT_LIST_HEAD(&psGEDLogListen->sList);
+        list_add(&psGEDLogListen->sList, &gsGEDLogBufList.sList_listen);
+
+exit_unlock:
+        write_unlock_bh(&gsGEDLogBufList.sLock);
+    }
+
+    return err;
+}
+
 //-----------------------------------------------------------------------------
 void ged_log_buf_free(GED_LOG_BUF_HANDLE hLogBuf)
 {
@@ -572,11 +745,16 @@ GED_ERROR ged_log_buf_print(GED_LOG_BUF_HANDLE hLogBuf, const char *fmt, ...)
 {
     va_list args;
     GED_ERROR err;
-    GED_LOG_BUF *psGEDLogBuf = ged_log_buf_from_handle(hLogBuf);
+    GED_LOG_BUF *psGEDLogBuf;
+    
+    if (hLogBuf)
+    {
+        psGEDLogBuf = ged_log_buf_from_handle(hLogBuf);
 
-    va_start(args, fmt);
-    err = __ged_log_buf_vprint(psGEDLogBuf, fmt, args, psGEDLogBuf->attrs);
-    va_end(args);
+        va_start(args, fmt);
+        err = __ged_log_buf_vprint(psGEDLogBuf, fmt, args, psGEDLogBuf->attrs);
+        va_end(args);
+    }
 
     return GED_OK;
 }
@@ -584,14 +762,19 @@ GED_ERROR ged_log_buf_print2(GED_LOG_BUF_HANDLE hLogBuf, int i32LogAttrs, const 
 {
     va_list args;
     GED_ERROR err;
-    GED_LOG_BUF *psGEDLogBuf = ged_log_buf_from_handle(hLogBuf);
+    GED_LOG_BUF *psGEDLogBuf;
+    
+    if (hLogBuf)
+    {
+        psGEDLogBuf = ged_log_buf_from_handle(hLogBuf);
 
-    /* 0~7 reserved for internal buffer type */
-    i32LogAttrs &= ~(0xff);
+        /* clear reserved attrs */
+        i32LogAttrs &= ~0xff; 
 
-    va_start(args, fmt);
-    err = __ged_log_buf_vprint(psGEDLogBuf, fmt, args, psGEDLogBuf->attrs | i32LogAttrs);
-    va_end(args);
+        va_start(args, fmt);
+        err = __ged_log_buf_vprint(psGEDLogBuf, fmt, args, psGEDLogBuf->attrs | i32LogAttrs);
+        va_end(args);
+    }
 
     return GED_OK;
 }
@@ -608,7 +791,7 @@ GED_ERROR ged_log_buf_reset(GED_LOG_BUF_HANDLE hLogBuf)
         psGEDLogBuf->i32BufferCurrent = 0;
         for (i = 0; i < psGEDLogBuf->i32LineCount; ++i)
         {
-            psGEDLogBuf->pi32Line[i] = -1;
+            psGEDLogBuf->psLine[i].offset = -1;
         }
 
         spin_unlock_irqrestore(&psGEDLogBuf->sSpinLock, psGEDLogBuf->ui32IRQFlags);
@@ -633,12 +816,12 @@ static ssize_t ged_log_write_entry(const char __user *pszBuffer, size_t uiCount,
     {
         if (0 == ged_copy_from_user(acBuffer, pszBuffer, uiCount))
         {
-            acBuffer[uiCount] = '\0';
+            acBuffer[uiCount - 1] = '\0';
             if (strcmp(acBuffer, "reset") == 0)
             {
                 struct list_head *psListEntry, *psListEntryTemp, *psList;
                 write_lock_bh(&gsGEDLogBufList.sLock);
-                psList = &gsGEDLogBufList.sList;
+                psList = &gsGEDLogBufList.sList_buf;
                 list_for_each_safe(psListEntry, psListEntryTemp, psList)
                 {
                     GED_LOG_BUF* psGEDLogBuf = (GED_LOG_BUF*)list_entry(psListEntry, GED_LOG_BUF, sList);
@@ -682,7 +865,7 @@ static void* ged_log_seq_start(struct seq_file *psSeqFile, loff_t *puiPosition)
 
     read_lock_bh(&gsGEDLogBufList.sLock);
 
-    psList = &gsGEDLogBufList.sList;
+    psList = &gsGEDLogBufList.sList_buf;
     list_for_each_safe(psListEntry, psListEntryTemp, psList)
     {
         GED_LOG_BUF* psGEDLogBuf = (GED_LOG_BUF*)list_entry(psListEntry, GED_LOG_BUF, sList);
@@ -711,7 +894,7 @@ static void* ged_log_seq_next(struct seq_file *psSeqFile, void *pvData, loff_t *
 
     (*puiPosition)++;
 
-    psList = &gsGEDLogBufList.sList;
+    psList = &gsGEDLogBufList.sList_buf;
     list_for_each_safe(psListEntry, psListEntryTemp, psList)
     {
         GED_LOG_BUF* psGEDLogBuf = (GED_LOG_BUF*)list_entry(psListEntry, GED_LOG_BUF, sList);
@@ -739,9 +922,6 @@ static struct seq_operations gsGEDLogReadOps =
 GED_ERROR ged_log_system_init(void)
 {
     GED_ERROR err = GED_OK;
-
-    INIT_LIST_HEAD(&gsGEDLogBufList.sList);
-    rwlock_init(&gsGEDLogBufList.sLock);
 
     err = ged_debugFS_create_entry(
             "gedlog",
@@ -800,7 +980,9 @@ int ged_log_buf_write(GED_LOG_BUF_HANDLE hLogBuf, const char __user *pszBuffer, 
 }
 
 EXPORT_SYMBOL(ged_log_buf_alloc);
+EXPORT_SYMBOL(ged_log_buf_reset);
 EXPORT_SYMBOL(ged_log_buf_get);
+EXPORT_SYMBOL(ged_log_buf_get_early);
 EXPORT_SYMBOL(ged_log_buf_free);
 EXPORT_SYMBOL(ged_log_buf_print);
-EXPORT_SYMBOL(ged_log_buf_reset);
+EXPORT_SYMBOL(ged_log_buf_print2);

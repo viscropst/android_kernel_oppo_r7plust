@@ -9,10 +9,13 @@
 #include <linux/seq_file.h>
 #include <linux/hugetlb.h>
 #include <linux/kernel-page-flags.h>
-#include <linux/swap.h>
-#include <linux/swapops.h>
 #include <asm/uaccess.h>
 #include "internal.h"
+
+#ifdef CONFIG_SWAP
+#include <linux/swap.h>
+#include <linux/swapops.h>
+#endif
 
 #define KPMSIZE sizeof(u64)
 #define KPMMASK (KPMSIZE - 1)
@@ -34,10 +37,9 @@ static ssize_t kpagecount_read(struct file *file, char __user *buf,
 	u64 pcount;
 
 	pfn = src / KPMSIZE;
-	if(src != max_pfn_kpmsize){
-        count = min_t(size_t, count, max_pfn_kpmsize - src);
-	}
-	
+	if (src != max_pfn_kpmsize)
+		count = min_t(size_t, count, max_pfn_kpmsize - src);
+
 	if (src & KPMMASK || count & KPMMASK)
 		return -EINVAL;
 
@@ -72,10 +74,8 @@ static const struct file_operations proc_kpagecount_operations = {
 	.read = kpagecount_read,
 };
 
+/* M for pswap interface */
 #ifdef CONFIG_SWAP
-extern struct swap_info_struct *swap_info_get(swp_entry_t entry);
-extern void swap_info_unlock(struct swap_info_struct *si);
-
 static inline unsigned char swap_count(unsigned char ent)
 {
 	return ent & ~SWAP_HAS_CACHE;	/* may include SWAP_HAS_CONT flag */
@@ -90,30 +90,35 @@ static ssize_t kpageswapn_read(struct file *file, char __user *buf,
 			     size_t count, loff_t *ppos)
 {
 	u64 __user *out = (u64 __user *)buf;
-	unsigned long src = *ppos;
+	unsigned long src = *ppos, dst;
 	swp_entry_t swap_entry;
 	ssize_t ret = 0;
 	struct swap_info_struct *p;
 
-	swap_entry.val = src / KPMSIZE;
-	//printk(KERN_INFO "kpageswapn_read src: %lx\n", src);
-	//printk(KERN_INFO "kpageswapn_read swap entry: %lx\n", swap_entry.val);
-	
+	dst = src / KPMSIZE;
+	/* Format the swap entry from the corresponding pagemap value */
+	swap_entry = swp_entry(dst >> (SWP_TYPE_SHIFT(swap_entry) + RADIX_TREE_EXCEPTIONAL_SHIFT),
+							dst & SWP_OFFSET_MASK(swap_entry));
+
+	/*pr_info("kpageswapn_read src: %lx\n", src); */
+	/*pr_info("kpageswapn_read swap entry: %lx\n", swap_entry.val); */
+
 	if (src & KPMMASK || count & KPMMASK) {
-		printk(KERN_INFO "kpageswapn_read return EINVAL\n");
+		pr_err("kpageswapn_read return EINVAL\n");
 		return -EINVAL;
 	}
 
 	p = swap_info_get(swap_entry);
 	if (p) {
 		u64 swapcount = swap_count(p->swap_map[swp_offset(swap_entry)]);
+
 		if (put_user(swapcount, out)) {
-			printk(KERN_INFO "kpageswapn_read put user failed\n");
+			pr_err("pageswapn_read put user failed\n");
 			ret = -EFAULT;
 		}
 		swap_info_unlock(p);
 	} else {
-		printk(KERN_INFO "kpageswapn_read swap_info_get failed\n");
+		pr_err("kpageswapn_read swap_info_get failed\n");
 		ret = -EFAULT;
 	}
 
@@ -128,7 +133,7 @@ static const struct file_operations proc_kpageswapn_operations = {
 	.llseek = mem_lseek,
 	.read = kpageswapn_read,
 };
-#endif // CONFIG_SWAP
+#endif /* CONFIG_SWAP*/
 
 /* /proc/kpageflags - an array exposing page flags
  *
@@ -182,10 +187,11 @@ u64 stable_page_flags(struct page *page)
 	/*
 	 * PageTransCompound can be true for non-huge compound pages (slab
 	 * pages or pages allocated by drivers with __GFP_COMP) because it
-	 * just checks PG_head/PG_tail, so we need to check PageLRU to make
-	 * sure a given page is a thp, not a non-huge compound page.
+	 * just checks PG_head/PG_tail, so we need to check PageLRU/PageAnon
+	 * to make sure a given page is a thp, not a non-huge compound page.
 	 */
-	else if (PageTransCompound(page) && PageLRU(compound_head(page)))
+	else if (PageTransCompound(page) && (PageLRU(compound_head(page)) ||
+					     PageAnon(compound_head(page))))
 		u |= 1 << KPF_THP;
 
 	/*
@@ -195,6 +201,9 @@ u64 stable_page_flags(struct page *page)
 	 */
 	if (PageBuddy(page))
 		u |= 1 << KPF_BUDDY;
+
+	if (PageBalloon(page))
+		u |= 1 << KPF_BALLOON;
 
 	u |= kpf_copy_bit(k, KPF_LOCKED,	PG_locked);
 
@@ -245,10 +254,9 @@ static ssize_t kpageflags_read(struct file *file, char __user *buf,
 	ssize_t ret = 0;
 
 	pfn = src / KPMSIZE;
-	if(src != max_pfn_kpmsize){
-	    count = min_t(unsigned long, count, max_pfn_kpmsize - src);
-	}
-	
+	if (src != max_pfn_kpmsize)
+		count = min_t(unsigned long, count, max_pfn_kpmsize - src);
+
 	if (src & KPMMASK || count & KPMMASK)
 		return -EINVAL;
 
@@ -282,10 +290,10 @@ static const struct file_operations proc_kpageflags_operations = {
 static int __init proc_page_init(void)
 {
 	proc_create("kpagecount", S_IRUSR, NULL, &proc_kpagecount_operations);
-#ifdef CONFIG_SWAP
+#ifdef CONFIG_SWAP /* M for pswap interface */
 	proc_create("kpageswapn", S_IRUSR, NULL, &proc_kpageswapn_operations);
-#endif // CONFIG_SWAP
+#endif /* CONFIG_SWAP*/
 	proc_create("kpageflags", S_IRUSR, NULL, &proc_kpageflags_operations);
 	return 0;
 }
-module_init(proc_page_init);
+fs_initcall(proc_page_init);

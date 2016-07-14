@@ -13,13 +13,13 @@
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/module.h>
-#include <mach/mt_typedefs.h>
+/*#include <mach/mt_typedefs.h>*/
 #include <linux/timer.h>
-#include <mach/mt_pmic_wrap.h>
+#include <mt_pmic_wrap.h>
 #include <linux/syscore_ops.h>
 
 #define PMIC_WRAP_DEVICE "pmic_wrap"
-#define VERSION     "$Revision$"
+#define VERSION     "Revision"
 
 static struct mt_pmic_wrap_driver mt_wrp = {
 	.driver = {
@@ -36,7 +36,7 @@ struct mt_pmic_wrap_driver *get_mt_pmic_wrap_drv(void)
 /*this function only used for ROME plus*/
 int check_pmic_wrap_init(void)
 {
-	if(mt_wrp.wacs2_hal == NULL)
+	if (mt_wrp.wacs2_hal == NULL)
 		return -1;
 	else
 		return 0;
@@ -45,23 +45,23 @@ int check_pmic_wrap_init(void)
 /* ****************************************************************************** */
 /* --external API for pmic_wrap user------------------------------------------------- */
 /* ****************************************************************************** */
-S32 pwrap_wacs2(U32 write, U32 adr, U32 wdata, U32 * rdata)
+s32 pwrap_wacs2(u32 write, u32 adr, u32 wdata, u32 *rdata)
 {
 	if (mt_wrp.wacs2_hal != NULL)
 		return mt_wrp.wacs2_hal(write, adr, wdata, rdata);
 
-	printk(KERN_ERR "[WRAP]" "driver need registered!!");
+	pr_err("[WRAP]" "driver need registered!!");
 	return -5;
 
 }
 EXPORT_SYMBOL(pwrap_wacs2);
-S32 pwrap_read(U32 adr, U32 *rdata)
+s32 pwrap_read(u32 adr, u32 *rdata)
 {
 	return pwrap_wacs2(PWRAP_READ, adr, 0, rdata);
 }
 EXPORT_SYMBOL(pwrap_read);
 
-S32 pwrap_write(U32 adr, U32 wdata)
+s32 pwrap_write(u32 adr, u32 wdata)
 {
 	return pwrap_wacs2(PWRAP_WRITE, adr, wdata, 0);
 }
@@ -73,7 +73,7 @@ EXPORT_SYMBOL(pwrap_write);
 /* [2]: CPU IRQ status in PMIC2 */
 /* [3]: RESERVED */
 /********************************************************************/
-U32 pmic_wrap_eint_status(void)
+u32 pmic_wrap_eint_status(void)
 {
 	return mt_pmic_wrap_eint_status();
 }
@@ -105,7 +105,7 @@ static ssize_t mt_pwrap_store(struct device_driver *driver, const char *buf, siz
 	if (mt_wrp.store_hal != NULL)
 		return mt_wrp.store_hal(buf, count);
 
-	printk(KERN_ERR "[WRAP]" "driver need registered!!");
+	pr_err("[WRAP]" "driver need registered!!");
 	return count;
 }
 
@@ -126,7 +126,6 @@ static void pwrap_resume(void)
 {
 	if (mt_wrp.resume != NULL)
 		mt_wrp.resume();
-	return;
 }
 
 static struct syscore_ops pwrap_syscore_ops = {
@@ -136,28 +135,16 @@ static struct syscore_ops pwrap_syscore_ops = {
 
 static int __init mt_pwrap_init(void)
 {
-	U32 ret = 0;
-	printk("[PWRAP] common driver init, version %s\n", VERSION);
+	u32 ret = 0;
 
-/* if(mt_wrp.init != NULL) */
-/* mt_wrp.init(); */
-	/* ret = platform_driver_register(&mt_pwrap_driver); */
 	ret = driver_register(&mt_wrp.driver);
-	if (ret) {
-		printk(KERN_ERR "[WRAP]" "Fail to register mt_wrp");
-	}
-
+	if (ret)
+		pr_err("[WRAP]" "Fail to register mt_wrp");
 	ret = driver_create_file(&mt_wrp.driver, &driver_attr_pwrap);
-	if (ret) {
-		printk(KERN_ERR "[WRAP]" "Fail to create mt_wrp sysfs files");
-	}
+	if (ret)
+		pr_err("[WRAP]" "Fail to create mt_wrp sysfs files");
 	/* PWRAPLOG("pwrap_init_ops\n"); */
 	register_syscore_ops(&pwrap_syscore_ops);
-
-	/* //gating eint/i2c/pwm/kpd clock@PMIC */
-	/* pwrap_read_nochk(PMIC_WRP_CKPDN,&rdata); */
-	/* //disable clock,except kpd(bit[4] kpd and bit[6] 32k); */
-	/* ret= pwrap_write_nochk(PMIC_WRP_CKPDN,  rdata | 0x2F);//set dewrap clock bit */
 	return ret;
 
 }
@@ -191,6 +178,6 @@ postcore_initcall(mt_pwrap_init);
 /* } */
 /* device_initcall(pwrap_init_ops); */
 
-MODULE_AUTHOR("Ranran Lu <ranran.lu@mediatek.com>");
-MODULE_DESCRIPTION("pmic_wrapper Driver  $Revision$");
+MODULE_AUTHOR("mediatek");
+MODULE_DESCRIPTION("pmic_wrapper Driver  Revision");
 MODULE_LICENSE("GPL");

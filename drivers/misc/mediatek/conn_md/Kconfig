@@ -1,5 +1,0 @@
-config MTK_CONN_MD
-  bool CONFIG_MTK_CONN_MD
-  default y if MTK_LTE_SUPPORT
-  help
-    CONFIG_MTK_CONN_MD

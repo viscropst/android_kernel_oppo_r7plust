@@ -1,4 +1,4 @@
-#include <linux/aee.h>
+#include <mt-plat/aee.h>
 #include <linux/atomic.h>
 #include <linux/console.h>
 #include <linux/delay.h>
@@ -11,7 +11,7 @@
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <linux/mm.h>
-#include <asm/io.h>
+#include <linux/io.h>
 
 struct dram_console_buffer {
 	uint32_t sig;
@@ -40,24 +40,22 @@ static void dram_console_write(struct console *console, const char *msg, unsigne
 		       dram_console_buffer_size);
 		buffer->start = 0;
 		buffer->size = dram_console_buffer_size;
-	} else if (count > (dram_console_buffer_size - buffer->start))	/* count > last buffer, full them and fill the head buffer */
-	{
+	} else if (count > (dram_console_buffer_size - buffer->start)) {
+		/* count > last buffer, full them and fill the head buffer */
 		rem = dram_console_buffer_size - buffer->start;
 		memcpy(buffer->data + buffer->start, msg, rem);
 		memcpy(buffer->data, msg + rem, count - rem);
 		buffer->start = count - rem;
 		buffer->size = dram_console_buffer_size;
-	} else			/* count <=  last buffer, fill in free buffer */
-	{
+	} else {		/* count <=  last buffer, fill in free buffer */
+
 		memcpy(buffer->data + buffer->start, msg, count);	/* count <= last buffer, fill them */
 		buffer->start += count;
 		buffer->size += count;
-		if (buffer->start >= dram_console_buffer_size) {
+		if (buffer->start >= dram_console_buffer_size)
 			buffer->start = 0;
-		}
-		if (buffer->size > dram_console_buffer_size) {
+		if (buffer->size > dram_console_buffer_size)
 			buffer->size = dram_console_buffer_size;
-		}
 	}
 }
 
@@ -89,11 +87,11 @@ static int __init ram_console_init(struct dram_console_buffer *buffer, size_t bu
 
 	if (buffer->sig == RAM_CONSOLE_SIG) {
 		if (buffer->size > dram_console_buffer_size || buffer->start > buffer->size)
-			LOGE("ram_console: found existing invalid "
-			     "buffer, size %d, start %d\n", buffer->size, buffer->start);
+			LOGE("ram_console: found existing invalid buffer, size %d, start %d\n",
+					buffer->size, buffer->start);
 		else {
-			LOGE("ram_console: found existing buffer, "
-			     "size %d, start %d\n", buffer->size, buffer->start);
+			LOGE("ram_console: found existing buffer, size %d, start %d\n",
+					buffer->size, buffer->start);
 			ram_console_save_old(buffer);
 		}
 	} else {
@@ -121,14 +119,13 @@ static void __init *remap_lowmem(phys_addr_t start, phys_addr_t size)
 
 	prot = pgprot_noncached(PAGE_KERNEL);
 
-	pages = kmalloc(sizeof(struct page *) * page_count, GFP_KERNEL);
-	if (!pages) {
-		pr_err("%s: Failed to allocate array for %u pages\n", __func__, page_count);
+	pages = kmalloc_array(page_count, sizeof(struct page *), GFP_KERNEL);
+	if (!pages)
 		return NULL;
-	}
 
 	for (i = 0; i < page_count; i++) {
 		phys_addr_t addr = page_start + i * PAGE_SIZE;
+
 		pages[i] = pfn_to_page(addr >> PAGE_SHIFT);
 	}
 	vaddr = vmap(pages, page_count, VM_MAP, prot);
@@ -168,14 +165,12 @@ static ssize_t dram_console_read_old(struct file *file, char __user *buf,
 	loff_t pos = *offset;
 	ssize_t count;
 
-	if (pos >= ram_console_old_log_size) {
+	if (pos >= ram_console_old_log_size)
 		return 0;
-	}
 
 	count = min(len, (size_t) (ram_console_old_log_size - pos));
-	if (copy_to_user(buf, ram_console_old_log + pos, count)) {
+	if (copy_to_user(buf, ram_console_old_log + pos, count))
 		return -EFAULT;
-	}
 
 	*offset += count;
 	return count;
@@ -205,7 +200,6 @@ void dram_console_init(struct proc_dir_entry *root_entry)
 
 	entry->proc_fops = &ram_console_file_ops;
 	entry->size = ram_console_old_log_size;
-	return;
 }
 
 void dram_console_done(struct proc_dir_entry *aed_proc_dir)
@@ -217,4 +211,5 @@ void aee_dram_console_reserve_memory(void)
 {
 	memblock_reserve(CONFIG_MTK_AEE_DRAM_CONSOLE_ADDR, CONFIG_MTK_AEE_DRAM_CONSOLE_SIZE);
 }
+
 console_initcall(dram_console_early_init);

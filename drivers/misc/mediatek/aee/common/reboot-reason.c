@@ -8,20 +8,18 @@
 #include <linux/seq_file.h>
 #include <linux/delay.h>
 #include <linux/mm.h>
-#include <linux/stacktrace.h>
 #include <linux/sched.h>
 #include <asm/stacktrace.h>
 #include <asm/memory.h>
 #include <asm/traps.h>
-#include <asm/elf.h>
+#include <linux/elf.h>
 #include <mach/wd_api.h>
-#include <mach/smp.h>
-#include <linux/aee.h>
-#include <linux/mrdump.h>
+#include <smp.h>
+#include <mt-plat/aee.h>
+#include <mrdump.h>
 #include "aee-common.h"
 
 #define RR_PROC_NAME "reboot-reason"
-extern int aee_rr_last_fiq_step(void);
 
 static struct proc_dir_entry *aee_rr_file;
 
@@ -29,7 +27,7 @@ static struct proc_dir_entry *aee_rr_file;
 #define WDT_HW_REBOOT 1
 #define WDT_SW_REBOOT 2
 
-typedef enum {
+enum boot_reason_t {
 	BR_POWER_KEY = 0,
 	BR_USB,
 	BR_RTC,
@@ -39,15 +37,14 @@ typedef enum {
 	BR_2SEC_REBOOT,
 	BR_UNKNOWN,
 	BR_KE_REBOOT
-} boot_reason_t;
+};
 
-char boot_reason[][16] =
-    { "keypad", "usb_chg", "rtc", "wdt", "reboot", "tool reboot", "smpl", "others", "kpanic" };
+char boot_reason[][16] = { "XXXXXX", "XXXXXXX", "XXX", "XXX",
+	"XXXXXX", "XXXXXXXXXXX", "XXXX", "XXXXXX", "XXXXXX" };
 
-extern int aee_rr_reboot_reason_show(struct seq_file *m, void *v);
 int __weak aee_rr_reboot_reason_show(struct seq_file *m, void *v)
 {
-	seq_printf(m, "mtk_ram_console not enabled.");
+	seq_puts(m, "mtk_ram_console not enabled.");
 	return 0;
 }
 
@@ -68,9 +65,8 @@ void aee_rr_proc_init(struct proc_dir_entry *aed_proc_dir)
 {
 	aee_rr_file = proc_create(RR_PROC_NAME,
 				  0444, aed_proc_dir, &aee_rr_reboot_reason_proc_fops);
-	if (aee_rr_file == NULL) {
+	if (aee_rr_file == NULL)
 		LOGE("%s: Can't create rr proc entry\n", __func__);
-	}
 }
 EXPORT_SYMBOL(aee_rr_proc_init);
 
@@ -85,7 +81,9 @@ static ssize_t powerup_reason_show(struct kobject *kobj, struct kobj_attribute *
 {
 	int g_boot_reason = 0;
 	char *br_ptr;
-	if ((br_ptr = strstr(saved_command_line, "boot_reason=")) != 0) {
+
+	br_ptr = strstr(saved_command_line, "boot_reason=");
+	if (br_ptr != 0) {
 		/* get boot reason */
 		g_boot_reason = br_ptr[12] - '0';
 		LOGE("g_boot_reason=%d\n", g_boot_reason);
@@ -118,9 +116,8 @@ int ksysfs_bootinfo_init(void)
 	int error;
 
 	bootinfo_kobj = kobject_create_and_add("bootinfo", NULL);
-	if (!bootinfo_kobj) {
+	if (!bootinfo_kobj)
 		return -ENOMEM;
-	}
 
 	error = sysfs_create_group(bootinfo_kobj, &bootinfo_attr_group);
 	if (error)
@@ -146,6 +143,7 @@ int aee_nested_printf(const char *fmt, ...)
 {
 	va_list args;
 	static int total_len;
+
 	va_start(args, fmt);
 	total_len += vsnprintf(nested_panic_buf, sizeof(nested_panic_buf), fmt, args);
 	va_end(args);
@@ -161,6 +159,7 @@ static void print_error_msg(int len)
 		"Top out of kernel addr", "Buf len not enough"
 	};
 	int tmp = (-len) - 1;
+
 	aee_sram_fiq_log(error_msg[tmp]);
 }
 
@@ -176,9 +175,8 @@ static void print_error_msg(int len)
 int aee_dump_stack_top_binary(char *buf, int buf_len, unsigned long bottom, unsigned long top)
 {
 	/*should check stack address in kernel range */
-	if (bottom & 3) {
+	if (bottom & 3)
 		return -1;
-	}
 	if (!((bottom >= (PAGE_OFFSET + THREAD_SIZE)) &&
 	      (bottom <= (PAGE_OFFSET + get_linear_memory_size())))) {
 		return -2;
@@ -189,9 +187,8 @@ int aee_dump_stack_top_binary(char *buf, int buf_len, unsigned long bottom, unsi
 		return -3;
 	}
 
-	if (buf_len < top - bottom) {
+	if (buf_len < top - bottom)
 		return -4;
-	}
 
 	memcpy((void *)buf, (void *)bottom, top - bottom);
 
@@ -210,13 +207,13 @@ static atomic_t nested_panic_time = ATOMIC_INIT(0);
 inline void aee_print_regs(struct pt_regs *regs)
 {
 	int i;
+
 	aee_nested_printf("[pt_regs]");
-	for (i = 0; i < ELF_NGREG; i++) {
+	for (i = 0; i < ELF_NGREG; i++)
 		aee_nested_printf(FORMAT_LONG, ((unsigned long *)regs)[i]);
-	}
 	aee_nested_printf("\n");
 }
-	
+
 #define AEE_MAX_EXCP_FRAME	32
 inline void aee_print_bt(struct pt_regs *regs)
 {
@@ -224,6 +221,7 @@ inline void aee_print_bt(struct pt_regs *regs)
 	unsigned long high, bottom, fp;
 	struct stackframe cur_frame;
 	struct pt_regs *excp_regs;
+
 	bottom = regs->reg_sp;
 	if (!virt_addr_valid(bottom)) {
 		aee_nested_printf("invalid sp[%lx]\n", regs);
@@ -241,15 +239,14 @@ inline void aee_print_bt(struct pt_regs *regs)
 			break;
 		}
 		unwind_frame(&cur_frame);
-		if (!
-		    ((cur_frame.pc >= (PAGE_OFFSET + THREAD_SIZE))
-		     && virt_addr_valid(cur_frame.pc)))
+		if (!((cur_frame.pc >= (PAGE_OFFSET + THREAD_SIZE))
+		      && virt_addr_valid(cur_frame.pc)))
 			break;
 		if (in_exception_text(cur_frame.pc)) {
 #ifdef __aarch64__
 			/* work around for unknown reason do_mem_abort stack abnormal */
 			excp_regs = (void *)(cur_frame.fp + 0x10 + 0xa0);
-			unwind_frame(&cur_frame); /* skip do_mem_abort & el1_da */
+			unwind_frame(&cur_frame);	/* skip do_mem_abort & el1_da */
 #else
 			excp_regs = (void *)(cur_frame.fp + 4);
 #endif
@@ -259,12 +256,12 @@ inline void aee_print_bt(struct pt_regs *regs)
 
 	}
 	aee_nested_printf("\n");
-	return;
 }
 
 inline int aee_nested_save_stack(struct pt_regs *regs)
 {
 	int len = 0;
+
 	if (!virt_addr_valid(regs->reg_sp))
 		return -1;
 	aee_nested_printf("[%lx %lx]\n", regs->reg_sp, regs->reg_sp + 256);
@@ -302,6 +299,7 @@ asmlinkage void aee_stop_nested_panic(struct pt_regs *regs)
 	int prev_fiq_step = aee_rr_curr_fiq_step();
 	/* everytime enter nested_panic flow, add 8 */
 	static int step_base = -8;
+
 	step_base = step_base < 48 ? step_base + 8 : 56;
 
 	aee_rec_step_nested_panic(step_base);
@@ -343,7 +341,7 @@ asmlinkage void aee_stop_nested_panic(struct pt_regs *regs)
 
 		/*should not print stack info. this may overwhelms ram console used by fiq */
 		if (0 != in_fiq_handler()) {
-			aee_nested_printf("in fiq hander\n");
+			aee_nested_printf("in fiq handler\n");
 		} else {
 			/*Dump first panic stack */
 			aee_nested_printf("Previous\n");
@@ -367,11 +365,10 @@ asmlinkage void aee_stop_nested_panic(struct pt_regs *regs)
 		aee_rec_step_nested_panic(step_base + 6);
 		/* we donot want a FIQ after this, so disable hwt */
 		res = get_wd_api(&wd_api);
-		if (res) {
+		if (res)
 			aee_nested_printf("get_wd_api error\n");
-		} else {
+		else
 			wd_api->wd_aee_confirm_hwreboot();
-		}
 		aee_rec_step_nested_panic(step_base + 7);
 		break;
 	default:
@@ -382,9 +379,8 @@ asmlinkage void aee_stop_nested_panic(struct pt_regs *regs)
 	while (1) {
 		/* output to UART directly to avoid printk nested panic */
 		/* mt_fiq_printf("%s hang here%d\t", __func__, i++); */
-		while (timeout--) {
+		while (timeout--)
 			udelay(1);
-		}
 		timeout = 1000000;
 	}
 }

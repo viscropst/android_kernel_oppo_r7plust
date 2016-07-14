@@ -4,7 +4,7 @@
 #include <generated/autoconf.h>
 #include <linux/types.h>
 #include <linux/bug.h>
-#include <linux/aee.h>
+#include <mt-plat/aee.h>
 #include <linux/kallsyms.h>
 #include <linux/ptrace.h>
 
@@ -20,33 +20,34 @@
 #define AE_NOT_AVAILABLE        0xAEE00000
 #define AE_DEFAULT              0xAEE00001
 
-typedef enum {
+enum AEE_MODE {
 	AEE_MODE_MTK_ENG = 1,
 	AEE_MODE_MTK_USER,
 	AEE_MODE_CUSTOMER_ENG,
-	AEE_MODE_CUSTOMER_USER
-} AEE_MODE;
+	AEE_MODE_CUSTOMER_USER,
+	AEE_MODE_NOT_INIT
+};
 
-typedef enum {
+enum AEE_FORCE_RED_SCREEN_VALUE {
 	AEE_FORCE_DISABLE_RED_SCREEN = 0,
 	AEE_FORCE_RED_SCREEN,
 	AEE_FORCE_NOT_SET
-} AEE_FORCE_RED_SCREEN_VALUE;
+};
 
-typedef enum {
+enum AE_ERR {
 	AE_SUCC,
 	AE_FAIL
-} AE_ERR;
+};
 
-typedef enum {
+enum AE_PASS_METHOD {
 	AE_PASS_BY_MEM,
 	AE_PASS_BY_FILE,
 	AE_PASS_METHOD_END
-} AE_PASS_METHOD;
+};
 
-typedef enum { AE_REQ, AE_RSP, AE_IND, AE_CMD_TYPE_END } AE_CMD_TYPE;
+enum AE_CMD_TYPE { AE_REQ, AE_RSP, AE_IND, AE_CMD_TYPE_END };
 
-typedef enum {
+enum AE_CMD_ID {
 	AE_REQ_IDX,
 
 	AE_REQ_CLASS,
@@ -79,15 +80,15 @@ typedef enum {
 	AE_REQ_COREDUMP,	/* msg->data=file path */
 	AE_REQ_SET_READFLAG,	/* set read flag msg */
 	AE_REQ_E2S_INIT,	/* Init notification of client side(application layer) of Exp2Server */
-	AE_REQ_USERSPACEBACKTRACE=40,
+	AE_REQ_USERSPACEBACKTRACE = 40,
 	AE_REQ_USER_REG,
 	AE_REQ_USER_MAPS,
 	AE_CMD_ID_END
-} AE_CMD_ID;
+};
 
-typedef struct {
-	AE_CMD_TYPE cmdType;	/* command type */
-	AE_CMD_ID cmdId;	/* command Id */
+struct AE_Msg {
+	enum AE_CMD_TYPE cmdType;	/* command type */
+	enum AE_CMD_ID cmdId;	/* command Id */
 	union {
 		unsigned int seq;	/* sequence number for error checking */
 		int pid;	/* process id */
@@ -101,7 +102,7 @@ typedef struct {
 		int id;		/* desired id */
 	};
 	unsigned int dbOption;	/* DB dump option */
-} AE_Msg;
+};
 
 /* Kernel IOCTL interface */
 struct aee_dal_show {
@@ -130,12 +131,12 @@ struct aee_ioctl {
 struct aee_thread_user_stack {
 	pid_t tid;
 	int StackLength;
-	unsigned char Userspace_Stack[8192]; //8k stack ,define to char only for match 64bit/32bit
+	unsigned char Userspace_Stack[8192];	/* 8k stack ,define to char only for match 64bit/32bit */
 };
 #define AEEIOCTL_DAL_SHOW       _IOW('p', 0x01, struct aee_dal_show)	/* Show string on DAL layer  */
 #define AEEIOCTL_DAL_CLEAN      _IO('p', 0x02)	/* Clear DAL layer */
 #define AEEIOCTL_SETCOLOR       _IOW('p', 0x03, struct aee_dal_setcolor)	/* RGB color 0x00RRGGBB */
-									    /*#define AEEIOCTL_GET_PROCESS_BT _IOW('p', 0x04, struct aee_process_bt) *//*change new ID for KK */
+/*#define AEEIOCTL_GET_PROCESS_BT _IOW('p', 0x04, struct aee_process_bt) *//*change new ID for KK */
 #define AEEIOCTL_GET_PROCESS_BT _IOW('p', 0x04, struct aee_ioctl)
 #define AEEIOCTL_GET_SMP_INFO   _IOR('p', 0x05, int)
 #define AEEIOCTL_SET_AEE_MODE   _IOR('p', 0x06, int)
@@ -151,19 +152,19 @@ struct aee_thread_user_stack {
 #define AEEIOCTL_USER_IOCTL_TO_KERNEL_WANING _IOR('p', 0x0E, int)
 
 #define AED_FILE_OPS(entry) \
-  static const struct file_operations proc_##entry##_fops = { \
-    .read = proc_##entry##_read, \
-    .write = proc_##entry##_write, \
-  }
+	static const struct file_operations proc_##entry##_fops = { \
+		.read = proc_##entry##_read, \
+		.write = proc_##entry##_write, \
+	}
 
 #define AED_FILE_OPS_RO(entry) \
-  static const struct file_operations proc_##entry##_fops = { \
-    .read = proc_##entry##_read, \
-  }
+	static const struct file_operations proc_##entry##_fops = { \
+		.read = proc_##entry##_read, \
+	}
 
 #define  AED_PROC_ENTRY(name, entry, mode)\
-  if (!proc_create(#name, S_IFREG | mode, aed_proc_dir, &proc_##entry##_fops)) \
-	  LOGE("proc_create %s failed\n", #name)
+	({if (!proc_create(#name, S_IFREG | mode, aed_proc_dir, &proc_##entry##_fops)) \
+		LOGE("proc_create %s failed\n", #name); })
 
 
 struct proc_dir_entry;
@@ -181,4 +182,11 @@ void dram_console_done(struct proc_dir_entry *aed_proc_dir);
 
 struct aee_oops *ipanic_oops_copy(void);
 void ipanic_oops_free(struct aee_oops *oops, int erase);
+extern struct atomic_notifier_head panic_notifier_list;
+extern int ksysfs_bootinfo_init(void);
+extern void ksysfs_bootinfo_exit(void);
+extern int aee_dump_ccci_debug_info(int md_id, void **addr, int *size);
+extern void show_stack(struct task_struct *tsk, unsigned long *sp);
+extern int aee_mode;
+extern void aee_kernel_RT_Monitor_api(int lParam);
 #endif
