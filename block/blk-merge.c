@@ -10,40 +10,58 @@
 #include "blk.h"
 
 static unsigned int __blk_recalc_rq_segments(struct request_queue *q,
-					     struct bio *bio)
+					     struct bio *bio,
+					     bool no_sg_merge)
 {
-	struct bio_vec *bv, *bvprv = NULL;
-	int cluster, i, high, highprv = 1;
+	struct bio_vec bv, bvprv = { NULL };
+	int cluster, high, highprv = 1;
 	unsigned int seg_size, nr_phys_segs;
 	struct bio *fbio, *bbio;
+	struct bvec_iter iter;
 
 	if (!bio)
 		return 0;
+
+	/*
+	 * This should probably be returning 0, but blk_add_request_payload()
+	 * (Christoph!!!!)
+	 */
+	if (bio->bi_rw & REQ_DISCARD)
+		return 1;
+
+	if (bio->bi_rw & REQ_WRITE_SAME)
+		return 1;
 
 	fbio = bio;
 	cluster = blk_queue_cluster(q);
 	seg_size = 0;
 	nr_phys_segs = 0;
+	high = 0;
 	for_each_bio(bio) {
-		bio_for_each_segment(bv, bio, i) {
+		bio_for_each_segment(bv, bio, iter) {
+			/*
+			 * If SG merging is disabled, each bio vector is
+			 * a segment
+			 */
+			if (no_sg_merge)
+				goto new_segment;
+
 			/*
 			 * the trick here is making sure that a high page is
-			 * never considered part of another segment, since that
-			 * might change with the bounce page.
+			 * never considered part of another segment, since
+			 * that might change with the bounce page.
 			 */
-			high = page_to_pfn(bv->bv_page) > queue_bounce_pfn(q);
-			if (high || highprv)
-				goto new_segment;
-			if (cluster) {
-				if (seg_size + bv->bv_len
+			high = page_to_pfn(bv.bv_page) > queue_bounce_pfn(q);
+			if (!high && !highprv && cluster) {
+				if (seg_size + bv.bv_len
 				    > queue_max_segment_size(q))
 					goto new_segment;
-				if (!BIOVEC_PHYS_MERGEABLE(bvprv, bv))
+				if (!BIOVEC_PHYS_MERGEABLE(&bvprv, &bv))
 					goto new_segment;
-				if (!BIOVEC_SEG_BOUNDARY(q, bvprv, bv))
+				if (!BIOVEC_SEG_BOUNDARY(q, &bvprv, &bv))
 					goto new_segment;
 
-				seg_size += bv->bv_len;
+				seg_size += bv.bv_len;
 				bvprv = bv;
 				continue;
 			}
@@ -54,7 +72,7 @@ new_segment:
 
 			nr_phys_segs++;
 			bvprv = bv;
-			seg_size = bv->bv_len;
+			seg_size = bv.bv_len;
 			highprv = high;
 		}
 		bbio = bio;
@@ -70,16 +88,34 @@ new_segment:
 
 void blk_recalc_rq_segments(struct request *rq)
 {
-	rq->nr_phys_segments = __blk_recalc_rq_segments(rq->q, rq->bio);
+	bool no_sg_merge = !!test_bit(QUEUE_FLAG_NO_SG_MERGE,
+			&rq->q->queue_flags);
+
+	rq->nr_phys_segments = __blk_recalc_rq_segments(rq->q, rq->bio,
+			no_sg_merge);
 }
 
 void blk_recount_segments(struct request_queue *q, struct bio *bio)
 {
-	struct bio *nxt = bio->bi_next;
+	unsigned short seg_cnt;
 
-	bio->bi_next = NULL;
-	bio->bi_phys_segments = __blk_recalc_rq_segments(q, bio);
-	bio->bi_next = nxt;
+	/* estimate segment number by bi_vcnt for non-cloned bio */
+	if (bio_flagged(bio, BIO_CLONED))
+		seg_cnt = bio_segments(bio);
+	else
+		seg_cnt = bio->bi_vcnt;
+
+	if (test_bit(QUEUE_FLAG_NO_SG_MERGE, &q->queue_flags) &&
+			(seg_cnt < queue_max_segments(q)))
+		bio->bi_phys_segments = seg_cnt;
+	else {
+		struct bio *nxt = bio->bi_next;
+
+		bio->bi_next = NULL;
+		bio->bi_phys_segments = __blk_recalc_rq_segments(q, bio, false);
+		bio->bi_next = nxt;
+	}
+
 	bio->bi_flags |= (1 << BIO_SEG_VALID);
 }
 EXPORT_SYMBOL(blk_recount_segments);
@@ -87,6 +123,9 @@ EXPORT_SYMBOL(blk_recount_segments);
 static int blk_phys_contig_segment(struct request_queue *q, struct bio *bio,
 				   struct bio *nxt)
 {
+	struct bio_vec end_bv = { NULL }, nxt_bv;
+	struct bvec_iter iter;
+
 	if (!blk_queue_cluster(q))
 		return 0;
 
@@ -97,34 +136,40 @@ static int blk_phys_contig_segment(struct request_queue *q, struct bio *bio,
 	if (!bio_has_data(bio))
 		return 1;
 
-	if (!BIOVEC_PHYS_MERGEABLE(__BVEC_END(bio), __BVEC_START(nxt)))
+	bio_for_each_segment(end_bv, bio, iter)
+		if (end_bv.bv_len == iter.bi_size)
+			break;
+
+	nxt_bv = bio_iovec(nxt);
+
+	if (!BIOVEC_PHYS_MERGEABLE(&end_bv, &nxt_bv))
 		return 0;
 
 	/*
 	 * bio and nxt are contiguous in memory; check if the queue allows
 	 * these two to be merged into one
 	 */
-	if (BIO_SEG_BOUNDARY(q, bio, nxt))
+	if (BIOVEC_SEG_BOUNDARY(q, &end_bv, &nxt_bv))
 		return 1;
 
 	return 0;
 }
 
-static void
+static inline void
 __blk_segment_map_sg(struct request_queue *q, struct bio_vec *bvec,
-		     struct scatterlist *sglist, struct bio_vec **bvprv,
+		     struct scatterlist *sglist, struct bio_vec *bvprv,
 		     struct scatterlist **sg, int *nsegs, int *cluster)
 {
 
 	int nbytes = bvec->bv_len;
 
-	if (*bvprv && *cluster) {
+	if (*sg && *cluster) {
 		if ((*sg)->length + nbytes > queue_max_segment_size(q))
 			goto new_segment;
 
-		if (!BIOVEC_PHYS_MERGEABLE(*bvprv, bvec))
+		if (!BIOVEC_PHYS_MERGEABLE(bvprv, bvec))
 			goto new_segment;
-		if (!BIOVEC_SEG_BOUNDARY(q, *bvprv, bvec))
+		if (!BIOVEC_SEG_BOUNDARY(q, bvprv, bvec))
 			goto new_segment;
 
 		(*sg)->length += nbytes;
@@ -150,7 +195,49 @@ new_segment:
 		sg_set_page(*sg, bvec->bv_page, nbytes, bvec->bv_offset);
 		(*nsegs)++;
 	}
-	*bvprv = bvec;
+	*bvprv = *bvec;
+}
+
+static int __blk_bios_map_sg(struct request_queue *q, struct bio *bio,
+			     struct scatterlist *sglist,
+			     struct scatterlist **sg)
+{
+	struct bio_vec bvec, bvprv = { NULL };
+	struct bvec_iter iter;
+	int nsegs, cluster;
+
+	nsegs = 0;
+	cluster = blk_queue_cluster(q);
+
+	if (bio->bi_rw & REQ_DISCARD) {
+		/*
+		 * This is a hack - drivers should be neither modifying the
+		 * biovec, nor relying on bi_vcnt - but because of
+		 * blk_add_request_payload(), a discard bio may or may not have
+		 * a payload we need to set up here (thank you Christoph) and
+		 * bi_vcnt is really the only way of telling if we need to.
+		 */
+
+		if (bio->bi_vcnt)
+			goto single_segment;
+
+		return 0;
+	}
+
+	if (bio->bi_rw & REQ_WRITE_SAME) {
+single_segment:
+		*sg = sglist;
+		bvec = bio_iovec(bio);
+		sg_set_page(*sg, bvec.bv_page, bvec.bv_len, bvec.bv_offset);
+		return 1;
+	}
+
+	for_each_bio(bio)
+		bio_for_each_segment(bvec, bio, iter)
+			__blk_segment_map_sg(q, &bvec, sglist, &bvprv, sg,
+					     &nsegs, &cluster);
+
+	return nsegs;
 }
 
 /*
@@ -160,147 +247,11 @@ new_segment:
 int blk_rq_map_sg(struct request_queue *q, struct request *rq,
 		  struct scatterlist *sglist)
 {
-	struct bio_vec *bvec, *bvprv;
-	struct req_iterator iter;
-	struct scatterlist *sg;
-	int nsegs, cluster;
-#if defined(FEATURE_STORAGE_PID_LOGGER)
-        struct page_pid_logger *prev_logger = 0;
-#endif
+	struct scatterlist *sg = NULL;
+	int nsegs = 0;
 
-	nsegs = 0;
-	cluster = blk_queue_cluster(q);
-
-	/*
-	 * for each bio in rq
-	 */
-	bvprv = NULL;
-	sg = NULL;
-	rq_for_each_segment(bvec, rq, iter) {
-		__blk_segment_map_sg(q, bvec, sglist, &bvprv, &sg,
-				     &nsegs, &cluster);
-//#undef FEATURE_STORAGE_PID_LOGGER
-#if defined(FEATURE_STORAGE_PID_LOGGER)              
-			do {
-				extern spinlock_t g_locker;
-				extern unsigned char *page_logger;
-				
-				extern struct struct_pid_logger g_pid_logger[PID_ID_CNT];
-				unsigned long flags;
-				if(page_logger) { 
-					struct page_pid_logger *tmp_logger;
-					unsigned long page_offset;
-					int index, mmcqd_index;
-					pid_t current_pid=0;
-					//#if defined(CONFIG_FLATMEM)
-					//page_offset = (unsigned long)((bvec->bv_page) - mem_map);
-					//#else
-					page_offset = (unsigned long)(__page_to_pfn(bvec->bv_page))- PHYS_PFN_OFFSET;
-					//#endif
-					tmp_logger =((struct page_pid_logger *)page_logger) + page_offset;
-					//tmp_locker =((struct page_pid_locker *)page_logger_lock) + page_offset;
-					#if defined(CONFIG_FLATMEM)
-					//printk(KERN_INFO"hank merge pid1:%u pid2:%u bv_page:%p vmemmap:%p pfn:%ld %s \n", tmp_logger->pid1, tmp_logger->pid2, bvec->bv_page, vmemmap, (unsigned long)(__page_to_pfn(bvec->bv_page)), q->backing_dev_info.name);
-					#else
-					//printk(KERN_INFO"hank merge pid1:%u pid2:%u bv_page:%x mem_map:%x pfn:%d %s \n", tmp_logger->pid1, tmp_logger->pid2, bvec->bv_page, mem_map, (unsigned long)(__page_to_pfn(bvec->bv_page)), q->backing_dev_info.name);
-					#endif
-					current_pid = current->pid;
-
-					//find the exactly pid record array
-					for( mmcqd_index=0; mmcqd_index<PID_ID_CNT; mmcqd_index++) {
-						//printk(KERN_INFO"hank merge mmcqd_index:%d qcurrent_pid:%d current_pid:%d", mmcqd_index, g_pid_logger[mmcqd_index].current_pid, current_pid);
-						if( g_pid_logger[mmcqd_index].current_pid==0 || g_pid_logger[mmcqd_index].current_pid == current_pid ) {
-							g_pid_logger[mmcqd_index].current_pid = current_pid;
-							break;
-						}		
-					}
-					//no match array
-					if( mmcqd_index == PID_ID_CNT )
-						break;
-					/*
-					if( tmp_logger->pid1 == 0XFFFF && tmp_logger->pid2 == 0XFFFF)
-                                        {
-                                           printk(KERN_INFO"hank merge fail offset:%d of:%d bytes:%d rw:%d", page_offset, bvec->bv_offset, nbytes, (rq->cmd_flags & REQ_WRITE));
-                                        }else
-                                        {
-                                           printk(KERN_INFO"hank merge success offset:%d of:%d bytes:%d rw:%d", page_offset, bvec->bv_offset, nbytes, (rq->cmd_flags & REQ_WRITE));
-                                        }
-					*/
-					if( tmp_logger->pid1 != 0xFFFF) {
-						spin_lock_irqsave(&g_locker, flags);
-						for( index=0; index<PID_LOGGER_COUNT; index++) {
-							if( tmp_logger->pid1 == 0xFFFF)
-								break;
-							if( (g_pid_logger[mmcqd_index].pid_logger[index] == 0 || g_pid_logger[mmcqd_index].pid_logger[index] == tmp_logger->pid1)) {
-								g_pid_logger[mmcqd_index].pid_logger[index] = tmp_logger->pid1;
-								if (rq->cmd_flags & REQ_WRITE) {
-									g_pid_logger[mmcqd_index].pid_logger_counter[index]++;
-									g_pid_logger[mmcqd_index].pid_logger_length[index]+=bvec->bv_len;
-								}else {
-									g_pid_logger[mmcqd_index].pid_logger_r_counter[index]++;
-									g_pid_logger[mmcqd_index].pid_logger_r_length[index]+=bvec->bv_len;
-								}
-								if( prev_logger && prev_logger != tmp_logger)
-								   prev_logger->pid1 = 0XFFFF;
-								//tmp_logger->pid1 = 0XFFFF;
-								break;
-							}
-							
-							
-						}
-#if defined(CONFIG_MTK_MORE_PID_LOGGER_COUNT)						
-						if(index==PID_LOGGER_COUNT && g_pid_logger[mmcqd_index].reserved<10){
-							 	if (rq->cmd_flags & REQ_WRITE) {
-									printk(KERN_INFO"[BLOCK_TAG]exceed logger count,pid%d w length %d",tmp_logger->pid1,bvec->bv_len);
-								}else {
-									printk(KERN_INFO"[BLOCK_TAG]exceed logger count,pid%d r length %d",tmp_logger->pid1,bvec->bv_len);
-								}
-								g_pid_logger[mmcqd_index].reserved++;
-						}
-#endif						
-						spin_unlock_irqrestore(&g_locker, flags);
-					}
-					if( tmp_logger->pid2 != 0xFFFF) {
-						spin_lock_irqsave(&g_locker, flags);
-						for( index=0; index<PID_LOGGER_COUNT; index++) {
-							if( tmp_logger->pid2 == 0xFFFF)
-								break;
-							if( (g_pid_logger[mmcqd_index].pid_logger[index] == 0 || g_pid_logger[mmcqd_index].pid_logger[index] == tmp_logger->pid2)) {
-								g_pid_logger[mmcqd_index].pid_logger[index] = tmp_logger->pid2;
-								if (rq->cmd_flags & REQ_WRITE) {
-									g_pid_logger[mmcqd_index].pid_logger_counter[index]++;
-									g_pid_logger[mmcqd_index].pid_logger_length[index]+=bvec->bv_len;
-								}else {
-									g_pid_logger[mmcqd_index].pid_logger_r_counter[index]++;
-									g_pid_logger[mmcqd_index].pid_logger_r_length[index]+=bvec->bv_len;
-								}
-								if( prev_logger && prev_logger != tmp_logger)
-								   prev_logger->pid2 = 0XFFFF;
-								//tmp_logger->pid2 = 0XFFFF;
-								break;
-							}
-							
-						}
-#if defined(CONFIG_MTK_MORE_PID_LOGGER_COUNT)						
-                         if(index==PID_LOGGER_COUNT && g_pid_logger[mmcqd_index].reserved<10){
-							 	if (rq->cmd_flags & REQ_WRITE) {
-									printk(KERN_INFO"[BLOCK_TAG]exceed logger count,pid%d w length %d",tmp_logger->pid2,bvec->bv_len);
-								}else {
-									printk(KERN_INFO"[BLOCK_TAG]exceed logger count,pid%d r length %d",tmp_logger->pid2,bvec->bv_len);
-								}
-								g_pid_logger[mmcqd_index].reserved++;
-							}
-#endif						 
-						spin_unlock_irqrestore(&g_locker, flags);
-					}
-					prev_logger = tmp_logger;
-					
-				}
-			} while (0);
-						
-#endif
-	} /* segments in rq */
-
+	if (rq->bio)
+		nsegs = __blk_bios_map_sg(q, rq->bio, sglist, &sg);
 
 	if (unlikely(rq->cmd_flags & REQ_COPY_USER) &&
 	    (blk_rq_bytes(rq) & q->dma_pad_mask)) {
@@ -346,21 +297,13 @@ EXPORT_SYMBOL(blk_rq_map_sg);
 int blk_bio_map_sg(struct request_queue *q, struct bio *bio,
 		   struct scatterlist *sglist)
 {
-	struct bio_vec *bvec, *bvprv;
-	struct scatterlist *sg;
-	int nsegs, cluster;
-	unsigned long i;
+	struct scatterlist *sg = NULL;
+	int nsegs;
+	struct bio *next = bio->bi_next;
+	bio->bi_next = NULL;
 
-	nsegs = 0;
-	cluster = blk_queue_cluster(q);
-
-	bvprv = NULL;
-	sg = NULL;
-	bio_for_each_segment(bvec, bio, i) {
-		__blk_segment_map_sg(q, bvec, sglist, &bvprv, &sg,
-				     &nsegs, &cluster);
-	} /* segments in bio */
-
+	nsegs = __blk_bios_map_sg(q, bio, sglist, &sg);
+	bio->bi_next = next;
 	if (sg)
 		sg_mark_end(sg);
 
@@ -378,7 +321,7 @@ static inline int ll_new_hw_segment(struct request_queue *q,
 	if (req->nr_phys_segments + nr_phys_segs > queue_max_segments(q))
 		goto no_merge;
 
-	if (bio_integrity(bio) && blk_integrity_merge_bio(q, req, bio))
+	if (blk_integrity_merge_bio(q, req, bio) == false)
 		goto no_merge;
 
 	/*
@@ -431,6 +374,17 @@ int ll_front_merge_fn(struct request_queue *q, struct request *req,
 	return ll_new_hw_segment(q, req, bio);
 }
 
+/*
+ * blk-mq uses req->special to carry normal driver per-request payload, it
+ * does not indicate a prepared command that we cannot merge with.
+ */
+static bool req_no_special_merge(struct request *req)
+{
+	struct request_queue *q = req->q;
+
+	return !q->mq_ops && req->special;
+}
+
 static int ll_merge_requests_fn(struct request_queue *q, struct request *req,
 				struct request *next)
 {
@@ -442,7 +396,7 @@ static int ll_merge_requests_fn(struct request_queue *q, struct request *req,
 	 * First check if the either of the requests are re-queued
 	 * requests.  Can't merge them if they are.
 	 */
-	if (req->special || next->special)
+	if (req_no_special_merge(req) || req_no_special_merge(next))
 		return 0;
 
 	/*
@@ -464,7 +418,7 @@ static int ll_merge_requests_fn(struct request_queue *q, struct request *req,
 	if (total_phys_segments > queue_max_segments(q))
 		return 0;
 
-	if (blk_integrity_rq(req) && blk_integrity_merge_rq(q, req, next))
+	if (blk_integrity_merge_rq(q, req, next) == false)
 		return 0;
 
 	/* Merge is OK... */
@@ -539,7 +493,7 @@ static int attempt_merge(struct request_queue *q, struct request *req,
 
 	if (rq_data_dir(req) != rq_data_dir(next)
 	    || req->rq_disk != next->rq_disk
-	    || next->special)
+	    || req_no_special_merge(next))
 		return 0;
 
 	if (req->cmd_flags & REQ_WRITE_SAME &&
@@ -627,6 +581,8 @@ int blk_attempt_req_merge(struct request_queue *q, struct request *rq,
 
 bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 {
+	struct request_queue *q = rq->q;
+
 	if (!rq_mergeable(rq) || !bio_mergeable(bio))
 		return false;
 
@@ -638,11 +594,11 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 		return false;
 
 	/* must be same device and not a special request */
-	if (rq->rq_disk != bio->bi_bdev->bd_disk || rq->special)
+	if (rq->rq_disk != bio->bi_bdev->bd_disk || req_no_special_merge(rq))
 		return false;
 
 	/* only merge integrity protected bio into ditto rq */
-	if (bio_integrity(bio) != blk_integrity_rq(rq))
+	if (blk_integrity_merge_bio(rq->q, rq, bio) == false)
 		return false;
 
 	/* must be using the same buffer */
@@ -650,14 +606,22 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 	    !blk_write_same_mergeable(rq->bio, bio))
 		return false;
 
+	if (q->queue_flags & (1 << QUEUE_FLAG_SG_GAPS)) {
+		struct bio_vec *bprev;
+
+		bprev = &rq->biotail->bi_io_vec[rq->biotail->bi_vcnt - 1];
+		if (bvec_gap_to_prev(bprev, bio->bi_io_vec[0].bv_offset))
+			return false;
+	}
+
 	return true;
 }
 
 int blk_try_merge(struct request *rq, struct bio *bio)
 {
-	if (blk_rq_pos(rq) + blk_rq_sectors(rq) == bio->bi_sector)
+	if (blk_rq_pos(rq) + blk_rq_sectors(rq) == bio->bi_iter.bi_sector)
 		return ELEVATOR_BACK_MERGE;
-	else if (blk_rq_pos(rq) - bio_sectors(bio) == bio->bi_sector)
+	else if (blk_rq_pos(rq) - bio_sectors(bio) == bio->bi_iter.bi_sector)
 		return ELEVATOR_FRONT_MERGE;
 	return ELEVATOR_NO_MERGE;
 }
