@@ -1091,7 +1091,7 @@ static int kdb_reboot(int argc, const char **argv)
 static void kdb_dumpregs(struct pt_regs *regs)
 {
 	int old_lvl = console_loglevel;
-	console_loglevel = 15;
+	console_loglevel = CONSOLE_LOGLEVEL_MOTORMOUTH;
 	kdb_trap_printk++;
 	show_regs(regs);
 	kdb_trap_printk--;
@@ -1109,11 +1109,6 @@ void kdb_set_current_task(struct task_struct *p)
 	}
 	kdb_current_regs = NULL;
 }
-
-/* Check timeout and force kernel panic if no user input for KE_TIMEOUT_SEC */
-int check_timeout;
-int force_panic;
-unsigned long long enter_time;
 
 /*
  * kdb_local - The main code for kdb.  This routine is invoked on a
@@ -1142,12 +1137,6 @@ static int kdb_local(kdb_reason_t reason, int error, struct pt_regs *regs,
 	struct task_struct *kdb_current =
 		kdb_curr_task(raw_smp_processor_id());
 
-	check_timeout = 1;
-	force_panic = 0;
-	enter_time = sched_clock();
-
-	get_cpu_var(kdb_in_use) = 1;
-	put_cpu_var(kdb_in_use);
 	KDB_DEBUG_STATE("kdb_local 1", reason);
 	kdb_go_count = 0;
 	if (reason == KDB_REASON_DEBUG) {
@@ -1210,6 +1199,9 @@ static int kdb_local(kdb_reason_t reason, int error, struct pt_regs *regs,
 		kdb_printf("due to oops @ " kdb_machreg_fmt "\n",
 			   instruction_pointer(regs));
 		kdb_dumpregs(regs);
+		break;
+	case KDB_REASON_SYSTEM_NMI:
+		kdb_printf("due to System NonMaskable Interrupt\n");
 		break;
 	case KDB_REASON_NMI:
 		kdb_printf("due to NonMaskable Interrupt @ "
@@ -1306,9 +1298,6 @@ do_full_getstr:
 			kdb_cmderror(diag);
 	}
 	KDB_DEBUG_STATE("kdb_local 9", diag);
-	get_cpu_var(kdb_in_use) = 0;
-	put_cpu_var(kdb_in_use);
-	
 	return diag;
 }
 
@@ -2483,7 +2472,7 @@ static void kdb_gmtime(struct timespec *tv, struct kdb_tm *tm)
 static void kdb_sysinfo(struct sysinfo *val)
 {
 	struct timespec uptime;
-	do_posix_clock_monotonic_gettime(&uptime);
+	ktime_get_ts(&uptime);
 	memset(val, 0, sizeof(*val));
 	val->uptime = uptime.tv_sec;
 	val->loads[0] = avenrun[0];
@@ -2546,7 +2535,7 @@ static int kdb_summary(int argc, const char **argv)
 #define K(x) ((x) << (PAGE_SHIFT - 10))
 	kdb_printf("\nMemTotal:       %8lu kB\nMemFree:        %8lu kB\n"
 		   "Buffers:        %8lu kB\n",
-		   val.totalram, val.freeram, val.bufferram);
+		   K(val.totalram), K(val.freeram), K(val.bufferram));
 	return 0;
 }
 
@@ -2867,10 +2856,6 @@ static void __init kdb_cmd_init(void)
 	}
 }
 
-#ifdef CONFIG_MTK_EXTMEM
-extern void init_debug_alloc_pool_aligned(void);
-#endif
-
 /* Initialize kdb_printf, breakpoint tables and kdb state */
 void __init kdb_init(int lvl)
 {
@@ -2879,11 +2864,6 @@ void __init kdb_init(int lvl)
 
 	if (kdb_init_lvl == KDB_INIT_FULL || lvl <= kdb_init_lvl)
 		return;
-
-#ifdef CONFIG_MTK_EXTMEM
-	init_debug_alloc_pool_aligned();
-#endif
-
 	for (i = kdb_init_lvl; i < lvl; i++) {
 		switch (i) {
 		case KDB_NOT_INITIALIZED:

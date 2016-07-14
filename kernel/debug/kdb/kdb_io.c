@@ -57,7 +57,6 @@ static int kdb_read_get_key(char *buffer, size_t bufsize)
 	int escape_delay = 0;
 	get_char_func *f, *f_escape = NULL;
 	int key;
-	unsigned long long duration = 0;
 
 	for (f = &kdb_poll_funcs[0]; ; ++f) {
 		if (*f == NULL) {
@@ -81,17 +80,6 @@ static int kdb_read_get_key(char *buffer, size_t bufsize)
 			if (escape_delay) {
 				udelay(ESCAPE_UDELAY);
 				--escape_delay;
-			}
-			/* check timeout and force trigger kernel panic */
-			if (check_timeout) {
-				duration = sched_clock() - enter_time;
-				do_div(duration, 1000000000ULL);
-				if (duration > KE_TIMEOUT_SEC) {
-					kdb_printf("\nKDB timeout! No user input. \n");
-					strcpy(buffer, "go");
-					force_panic = 1;
-					return -1;
-				}
 			}
 			continue;
 		}
@@ -178,12 +166,6 @@ static int kdb_read_get_key(char *buffer, size_t bufsize)
 		}
 		break;	/* A key to process */
 	}
-
-	if (check_timeout) {
-		kdb_printf("\nUser input! \n");
-		check_timeout = 0;
-	}
-
 	return key;
 }
 
@@ -736,7 +718,7 @@ kdb_printit:
 	}
 	if (logging) {
 		saved_loglevel = console_loglevel;
-		console_loglevel = 0;
+		console_loglevel = CONSOLE_LOGLEVEL_SILENT;
 		printk(KERN_INFO "%s", kdb_buffer);
 	}
 

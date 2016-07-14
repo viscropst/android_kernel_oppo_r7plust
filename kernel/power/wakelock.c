@@ -18,11 +18,7 @@
 #include <linux/rbtree.h>
 #include <linux/slab.h>
 
-//<20130327> <marc.huang> add wakelock dubug log
-int wakelock_debug = 1;
-#define _TAG_WAKELOCK "WAKELOCK"
-#define wakelock_log(fmt, ...)    do { if (wakelock_debug) pr_debug("[%s][%s]" fmt, _TAG_WAKELOCK, __func__, ##__VA_ARGS__); } while (0)
-#define wakelock_warn(fmt, ...)   do { if (wakelock_debug) pr_warn("[%s][%s]" fmt, _TAG_WAKELOCK, __func__, ##__VA_ARGS__); } while (0)
+#include "power.h"
 
 static DEFINE_MUTEX(wakelocks_lock);
 
@@ -195,12 +191,8 @@ int pm_wake_lock(const char *buf)
 	size_t len;
 	int ret = 0;
 
-	/*
-	 * 20130429 marc.huang
-	 * remove CAP_BLOCK_SUSPEND capability check (rollback to android kernel 3.4)
-	 */
-	//if (!capable(CAP_BLOCK_SUSPEND))
-	//	return -EPERM;
+	if (!capable(CAP_BLOCK_SUSPEND))
+		return -EPERM;
 
 	while (*str && !isspace(*str))
 		str++;
@@ -215,9 +207,6 @@ int pm_wake_lock(const char *buf)
 		if (ret)
 			return -EINVAL;
 	}
-
-	//<20130327> <marc.huang> add wakelock dubug log
-	wakelock_log("%s\n", buf);
 
 	mutex_lock(&wakelocks_lock);
 
@@ -248,12 +237,8 @@ int pm_wake_unlock(const char *buf)
 	size_t len;
 	int ret = 0;
 
-	/*
-	 * 20130429 marc.huang
-	 * remove CAP_BLOCK_SUSPEND capability check (rollback to android kernel 3.4)
-	 */
-	//if (!capable(CAP_BLOCK_SUSPEND))
-	//	return -EPERM;
+	if (!capable(CAP_BLOCK_SUSPEND))
+		return -EPERM;
 
 	len = strlen(buf);
 	if (!len)
@@ -264,9 +249,6 @@ int pm_wake_unlock(const char *buf)
 
 	if (!len)
 		return -EINVAL;
-
-	//<20130327> <marc.huang> add wakelock dubug log
-	wakelock_log("%s\n", buf);
 
 	mutex_lock(&wakelocks_lock);
 

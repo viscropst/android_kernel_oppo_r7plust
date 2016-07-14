@@ -5,12 +5,8 @@
 #include <linux/rcupdate.h>
 #include <linux/vmalloc.h>
 #include <linux/reboot.h>
-/*******************************************************************************
-* 20131225 marc.huang                                                          *
-* CPU Hotplug debug mechanism                                                  *
-*******************************************************************************/
-#include <linux/mtk_ram_console.h>
-/******************************************************************************/
+
+#include <mt-plat/mtk_ram_console.h>
 
 /*
  *	Notifier list for kernel code which wants to be called
@@ -77,21 +73,18 @@ static int notifier_chain_unregister(struct notifier_block **nl,
  *	@returns:	notifier_call_chain returns the value returned by the
  *			last notifier function called.
  */
-static int __kprobes notifier_call_chain(struct notifier_block **nl,
-					unsigned long val, void *v,
-					int nr_to_call,	int *nr_calls)
+static int notifier_call_chain(struct notifier_block **nl,
+			       unsigned long val, void *v,
+			       int nr_to_call, int *nr_calls)
 {
 	int ret = NOTIFY_DONE;
 	struct notifier_block *nb, *next_nb;
-/*******************************************************************************
-* 20131225 marc.huang                                                          *
-* CPU Hotplug debug mechanism                                                  *
-*******************************************************************************/
-#if defined(CONFIG_SMP) && (defined(MTK_CPU_HOTPLUG_DEBUG_1) || defined(MTK_CPU_HOTPLUG_DEBUG_2))
+
+#if defined(CONFIG_SMP)
+#if defined(MTK_CPU_HOTPLUG_DEBUG_1) || defined(MTK_CPU_HOTPLUG_DEBUG_2)
 	int index = 0;
-	extern struct raw_notifier_head cpu_chain;
-#endif //#if defined(CONFIG_SMP) && (defined(MTK_CPU_HOTPLUG_DEBUG_1) || defined(MTK_CPU_HOTPLUG_DEBUG_2))
-/******************************************************************************/
+#endif
+#endif /* CONFIG_SMP */
 
 	nb = rcu_dereference_raw(*nl);
 
@@ -106,23 +99,21 @@ static int __kprobes notifier_call_chain(struct notifier_block **nl,
 		}
 #endif
 
-/*******************************************************************************
-* 20131225 marc.huang                                                          *
-* CPU Hotplug debug mechanism                                                  *
-*******************************************************************************/
-#if defined(CONFIG_SMP) && (defined(MTK_CPU_HOTPLUG_DEBUG_1) || defined(MTK_CPU_HOTPLUG_DEBUG_2))
-		if (nl == &cpu_chain.head)
-		{
-		#if defined(MTK_CPU_HOTPLUG_DEBUG_1)
-			printk(KERN_DEBUG "[cpu_ntf] %02lx_%02d, %p\n", val, index, nb->notifier_call);
-		#endif //#if defined(MTK_CPU_HOTPLUG_DEBUG_1)
-		#if defined(MTK_CPU_HOTPLUG_DEBUG_2)
-			aee_rr_rec_hotplug(0, val & 0xff, index & 0xff, (unsigned long)nb->notifier_call);
-		#endif //#if defined(MTK_CPU_HOTPLUG_DEBUG_2)
+#if defined(CONFIG_SMP)
+#if defined(MTK_CPU_HOTPLUG_DEBUG_1) || defined(MTK_CPU_HOTPLUG_DEBUG_2)
+		if (nl == &cpu_chain.head) {
+#if defined(MTK_CPU_HOTPLUG_DEBUG_1)
+			pr_debug("[cpu_ntf] %02lx_%02d, %p\n",
+				val, index, nb->notifier_call);
+#endif
+#if defined(MTK_CPU_HOTPLUG_DEBUG_2)
+			aee_rr_rec_hotplug(0, val & 0xff, index & 0xff,
+				(unsigned long)nb->notifier_call);
+#endif
 			++index;
 		}
-#endif //#if defined(CONFIG_SMP) && (defined(MTK_CPU_HOTPLUG_DEBUG_1) || defined(MTK_CPU_HOTPLUG_DEBUG_2))
-/******************************************************************************/
+#endif
+#endif /* CONFIG_SMP */
 
 		ret = nb->notifier_call(nb, val, v);
 
@@ -134,25 +125,24 @@ static int __kprobes notifier_call_chain(struct notifier_block **nl,
 		nb = next_nb;
 		nr_to_call--;
 	}
-/*******************************************************************************
-* 20131225 marc.huang                                                          *
-* CPU Hotplug debug mechanism                                                  *
-*******************************************************************************/
-#if defined(CONFIG_SMP) && (defined(MTK_CPU_HOTPLUG_DEBUG_1) || defined(MTK_CPU_HOTPLUG_DEBUG_2))
-	if (nl == &cpu_chain.head)
-	{
-	#if defined(MTK_CPU_HOTPLUG_DEBUG_1)
-		printk(KERN_DEBUG "[cpu_ntf] %02lx_%02d, %p\n", val, index, 0);
-	#endif //#if defined(MTK_CPU_HOTPLUG_DEBUG_1)
-	#if defined(MTK_CPU_HOTPLUG_DEBUG_2)
-		//aee_rr_rec_hoplug(0, val & 0xff, index & 0xff);
+
+#if defined(CONFIG_SMP)
+#if defined(MTK_CPU_HOTPLUG_DEBUG_1) || defined(MTK_CPU_HOTPLUG_DEBUG_2)
+	if (nl == &cpu_chain.head) {
+#if defined(MTK_CPU_HOTPLUG_DEBUG_1)
+		pr_debug("[cpu_ntf] %02lx_%02d, %p\n", val, index, 0);
+#endif
+#if defined(MTK_CPU_HOTPLUG_DEBUG_2)
+		/* aee_rr_rec_hoplug(0, val & 0xff, index & 0xff); */
 		aee_rr_rec_hotplug(0, val & 0xff, index & 0xff, 0);
-	#endif //#if defined(MTK_CPU_HOTPLUG_DEBUG_2)
+#endif
 	}
-#endif //#if defined(CONFIG_SMP) && (defined(MTK_CPU_HOTPLUG_DEBUG_1) || defined(MTK_CPU_HOTPLUG_DEBUG_2))
-/******************************************************************************/
+#endif
+#endif /* CONFIG_SMP */
+
 	return ret;
 }
+NOKPROBE_SYMBOL(notifier_call_chain);
 
 /*
  *	Atomic notifier chain routines.  Registration and unregistration
@@ -223,9 +213,9 @@ EXPORT_SYMBOL_GPL(atomic_notifier_chain_unregister);
  *	Otherwise the return value is the return value
  *	of the last notifier function called.
  */
-int __kprobes __atomic_notifier_call_chain(struct atomic_notifier_head *nh,
-					unsigned long val, void *v,
-					int nr_to_call, int *nr_calls)
+int __atomic_notifier_call_chain(struct atomic_notifier_head *nh,
+				 unsigned long val, void *v,
+				 int nr_to_call, int *nr_calls)
 {
 	int ret;
 
@@ -235,13 +225,15 @@ int __kprobes __atomic_notifier_call_chain(struct atomic_notifier_head *nh,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(__atomic_notifier_call_chain);
+NOKPROBE_SYMBOL(__atomic_notifier_call_chain);
 
-int __kprobes atomic_notifier_call_chain(struct atomic_notifier_head *nh,
-		unsigned long val, void *v)
+int atomic_notifier_call_chain(struct atomic_notifier_head *nh,
+			       unsigned long val, void *v)
 {
 	return __atomic_notifier_call_chain(nh, val, v, -1, NULL);
 }
 EXPORT_SYMBOL_GPL(atomic_notifier_call_chain);
+NOKPROBE_SYMBOL(atomic_notifier_call_chain);
 
 /*
  *	Blocking notifier chain routines.  All access to the chain is
@@ -360,7 +352,7 @@ int __blocking_notifier_call_chain(struct blocking_notifier_head *nh,
 	 * racy then it does not matter what the result of the test
 	 * is, we re-check the list after having taken the lock anyway:
 	 */
-	if (rcu_dereference_raw(nh->head)) {
+	if (rcu_access_pointer(nh->head)) {
 		down_read(&nh->rwsem);
 		ret = notifier_call_chain(&nh->head, val, v, nr_to_call,
 					nr_calls);
@@ -578,7 +570,7 @@ EXPORT_SYMBOL_GPL(srcu_init_notifier_head);
 
 static ATOMIC_NOTIFIER_HEAD(die_chain);
 
-int notrace __kprobes notify_die(enum die_val val, const char *str,
+int notrace notify_die(enum die_val val, const char *str,
 	       struct pt_regs *regs, long err, int trap, int sig)
 {
 	struct die_args args = {
@@ -591,6 +583,7 @@ int notrace __kprobes notify_die(enum die_val val, const char *str,
 	};
 	return atomic_notifier_call_chain(&die_chain, val, &args);
 }
+NOKPROBE_SYMBOL(notify_die);
 
 int register_die_notifier(struct notifier_block *nb)
 {

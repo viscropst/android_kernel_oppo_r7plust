@@ -18,60 +18,35 @@
 
 #include "power.h"
 
-#define HIB_PM_DEBUG 1
-#define _TAG_HIB_M "HIB/PM"
-#if (HIB_PM_DEBUG)
-#undef hib_log
-#define hib_log(fmt, ...)  pr_warn("[%s][%s]" fmt, _TAG_HIB_M, __func__, ##__VA_ARGS__);
-#else
-#define hib_log(fmt, ...)
-#endif
-#undef hib_warn
-#define hib_warn(fmt, ...) pr_warn("[%s][%s]" fmt, _TAG_HIB_M, __func__, ##__VA_ARGS__);
-
 DEFINE_MUTEX(pm_mutex);
-EXPORT_SYMBOL_GPL(pm_mutex);
 
 #ifdef CONFIG_PM_SLEEP
 
 /* Routines for PM-transition notifications */
 
-BLOCKING_NOTIFIER_HEAD(pm_chain_head);
-EXPORT_SYMBOL_GPL(pm_chain_head);
-//<20130327> <marc.huang> add pm_notifier_count
-static unsigned int pm_notifier_count = 0;
+static BLOCKING_NOTIFIER_HEAD(pm_chain_head);
 
 int register_pm_notifier(struct notifier_block *nb)
 {
-	//<20130327> <marc.huang> add pm_notifier_count
-	++pm_notifier_count;
 	return blocking_notifier_chain_register(&pm_chain_head, nb);
 }
 EXPORT_SYMBOL_GPL(register_pm_notifier);
 
 int unregister_pm_notifier(struct notifier_block *nb)
 {
-	//<20130327> <marc.huang> add pm_notifier_count
-	--pm_notifier_count;
 	return blocking_notifier_chain_unregister(&pm_chain_head, nb);
 }
 EXPORT_SYMBOL_GPL(unregister_pm_notifier);
 
 int pm_notifier_call_chain(unsigned long val)
 {
-	//<20130327> <marc.huang> add pm_notifier_count
-	int ret;
-	pr_debug("[%s] pm_notifier_count: %u, event = %lu\n", __func__, pm_notifier_count, val);
-
-	ret = blocking_notifier_call_chain(&pm_chain_head, val, NULL);
+	int ret = blocking_notifier_call_chain(&pm_chain_head, val, NULL);
 
 	return notifier_to_errno(ret);
 }
-EXPORT_SYMBOL_GPL(pm_notifier_call_chain);
 
 /* If set, devices may be suspended and resumed asynchronously. */
-//<20130327> <marc.huang> disable async suspend/resume, set pm_async_enabled = 0
-int pm_async_enabled = 0;
+int pm_async_enabled = 1;
 
 static ssize_t pm_async_show(struct kobject *kobj, struct kobj_attribute *attr,
 			     char *buf)
@@ -302,17 +277,16 @@ static inline void pm_print_times_init(void) {}
 #endif /* CONFIG_PM_SLEEP_DEBUG */
 
 struct kobject *power_kobj;
-EXPORT_SYMBOL_GPL(power_kobj);
 
 /**
- *	state - control system power state.
+ * state - control system sleep states.
  *
- *	show() returns what states are supported, which is hard-coded to
- *	'standby' (Power-On Suspend), 'mem' (Suspend-to-RAM), and
- *	'disk' (Suspend-to-Disk).
+ * show() returns available sleep state labels, which may be "mem", "standby",
+ * "freeze" and "disk" (hibernation).  See Documentation/power/states.txt for a
+ * description of what they mean.
  *
- *	store() accepts one of those strings, translates it into the
- *	proper enumerated value, and initiates a suspend transition.
+ * store() accepts one of those strings, translates it into the proper
+ * enumerated value, and initiates a suspend transition.
  */
 static ssize_t state_show(struct kobject *kobj, struct kobj_attribute *attr,
 			  char *buf)
@@ -322,24 +296,22 @@ static ssize_t state_show(struct kobject *kobj, struct kobj_attribute *attr,
 	suspend_state_t i;
 
 	for (i = PM_SUSPEND_MIN; i < PM_SUSPEND_MAX; i++)
-		if (pm_states[i].state)
-			s += sprintf(s,"%s ", pm_states[i].label);
+		if (pm_states[i])
+			s += sprintf(s,"%s ", pm_states[i]);
+
 #endif
-#ifdef CONFIG_HIBERNATION
-	s += sprintf(s, "%s\n", "disk");
-#else
+	if (hibernation_available())
+		s += sprintf(s, "disk ");
 	if (s != buf)
 		/* convert the last space to a newline */
 		*(s-1) = '\n';
-#endif
 	return (s - buf);
 }
 
 static suspend_state_t decode_state(const char *buf, size_t n)
 {
 #ifdef CONFIG_SUSPEND
-	suspend_state_t state = PM_SUSPEND_MIN;
-	struct pm_sleep_state *s;
+	suspend_state_t state;
 #endif
 	char *p;
 	int len;
@@ -352,17 +324,17 @@ static suspend_state_t decode_state(const char *buf, size_t n)
 		return PM_SUSPEND_MAX;
 
 #ifdef CONFIG_SUSPEND
-	for (s = &pm_states[state]; state < PM_SUSPEND_MAX; s++, state++)
-		if (len == strlen(s->label)
-		    && !strncmp(buf, s->label, len))
-			return s->state;
+	for (state = PM_SUSPEND_MIN; state < PM_SUSPEND_MAX; state++) {
+		const char *label = pm_states[state];
+
+		if (label && len == strlen(label) && !strncmp(buf, label, len))
+			return state;
+	}
 #endif
 
 	return PM_SUSPEND_ON;
 }
 
-//<20130327> <marc.huang> merge android kernel 3.0 state_store function
-#ifdef CONFIG_MTK_LDVT
 static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 			   const char *buf, size_t n)
 {
@@ -390,84 +362,7 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 	pm_autosleep_unlock();
 	return error ? error : n;
 }
-#else //#ifdef CONFIG_MTK_LDVT
-static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
-               const char *buf, size_t n)
-{
-#ifdef CONFIG_SUSPEND
-#ifdef CONFIG_EARLYSUSPEND
-    suspend_state_t state = PM_SUSPEND_ON;
-#else
-    suspend_state_t state = PM_SUSPEND_STANDBY;
-#endif
-    struct pm_sleep_state *s;
-#endif
-    char *p;
-    int len;
-    int error = -EINVAL;
 
-    p = memchr(buf, '\n', n);
-    len = p ? p - buf : n;
-
-#ifdef CONFIG_MTK_HIBERNATION
-    state = decode_state(buf, n);
-    hib_log("entry (%d)\n", state);
-#endif
-
-#ifdef CONFIG_MTK_HIBERNATION
-    if (len == 8 && !strncmp(buf, "hibabort", len)) {
-        hib_log("abort hibernation...\n");
-        error = mtk_hibernate_abort();
-        goto Exit;
-    }
-#endif
-
-    /* First, check if we are requested to hibernate */
-    if (len == 4 && !strncmp(buf, "disk", len)) {
-#ifdef CONFIG_MTK_HIBERNATION
-        hib_log("trigger hibernation...\n");
-#ifdef CONFIG_EARLYSUSPEND
-        if (PM_SUSPEND_ON == get_suspend_state()) {
-            hib_warn("\"on\" to \"disk\" (i.e., 0->4) is not supported !!!\n");
-            error = -EINVAL;
-            goto Exit;
-        }
-#endif
-        if (!pre_hibernate()) {
-            error = 0;
-            error = mtk_hibernate();
-        }
-#else // !CONFIG_MTK_HIBERNATION
-        error = hibernate();
-#endif
-        goto Exit;
-    }
-
-#ifdef CONFIG_SUSPEND
-    for (s = &pm_states[state]; state < PM_SUSPEND_MAX; s++, state++) {
-        if (len == strlen(s->label)
-            && !strncmp(buf, s->label, len)) {
-            break;
-        }
-    }
-
-    if (state < PM_SUSPEND_MAX) {
-#ifdef CONFIG_EARLYSUSPEND
-        if (state == PM_SUSPEND_ON || pm_states[state].state) {
-            error = 0;
-            request_suspend_state(state);
-        } else
-            error = -EINVAL;
-#else
-        error = enter_state(state);
-#endif
-    }
-#endif
-
- Exit:
-    return error ? error : n;
-}
-#endif
 power_attr(state);
 
 #ifdef CONFIG_PM_SLEEP
@@ -529,6 +424,8 @@ static ssize_t wakeup_count_store(struct kobject *kobj,
 	if (sscanf(buf, "%u", &val) == 1) {
 		if (pm_save_wakeup_count(val))
 			error = n;
+		else
+			pm_print_active_wakeup_sources();
 	}
 
  out:
@@ -550,8 +447,8 @@ static ssize_t autosleep_show(struct kobject *kobj,
 
 #ifdef CONFIG_SUSPEND
 	if (state < PM_SUSPEND_MAX)
-		return sprintf(buf, "%s\n", pm_states[state].state ?
-						pm_states[state].label : "error");
+		return sprintf(buf, "%s\n", pm_states[state] ?
+					pm_states[state] : "error");
 #endif
 #ifdef CONFIG_HIBERNATION
 	return sprintf(buf, "disk\n");
@@ -567,7 +464,6 @@ static ssize_t autosleep_store(struct kobject *kobj,
 	suspend_state_t state = decode_state(buf, n);
 	int error;
 
-    hib_log("store autosleep_state(%d)\n", state);
 	if (state == PM_SUSPEND_ON
 	    && strcmp(buf, "off") && strcmp(buf, "off\n"))
 		return -EINVAL;
@@ -634,6 +530,10 @@ pm_trace_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 	if (sscanf(buf, "%d", &val) == 1) {
 		pm_trace_enabled = !!val;
+		if (pm_trace_enabled) {
+			pr_warn("PM: Enabling pm_trace changes system date and time during resume.\n"
+				"PM: Correct system time has to be restored manually after resume.\n");
+		}
 		return n;
 	}
 	return -EINVAL;
@@ -716,7 +616,6 @@ static struct attribute_group attr_group = {
 	.attrs = g,
 };
 
-#ifdef CONFIG_PM_RUNTIME
 struct workqueue_struct *pm_wq;
 EXPORT_SYMBOL_GPL(pm_wq);
 
@@ -726,9 +625,6 @@ static int __init pm_start_workqueue(void)
 
 	return pm_wq ? 0 : -ENOMEM;
 }
-#else
-static inline int pm_start_workqueue(void) { return 0; }
-#endif
 
 static int __init pm_init(void)
 {

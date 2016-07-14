@@ -44,49 +44,39 @@ static unsigned long max_stack_size;
 static arch_spinlock_t max_stack_lock =
 	(arch_spinlock_t)__ARCH_SPIN_LOCK_UNLOCKED;
 
-static int stack_trace_disabled __read_mostly;
 static DEFINE_PER_CPU(int, trace_active);
 static DEFINE_MUTEX(stack_sysctl_mutex);
 
 int stack_tracer_enabled;
 static int last_stack_tracer_enabled;
 
-/*LCH add for stack overflow debug */
-#if defined (CONFIG_MTK_AEE_FEATURE) && defined (CONFIG_MT_ENG_BUILD)
-#include <linux/aee.h>
-#include <linux/thread_info.h>
-/*768=sizeof(struct thread_info),1600 for buffer*/ 
-static unsigned long stack_overflow_thd = THREAD_SIZE-768-1600;
-module_param_named(stack_overflow_thd, stack_overflow_thd, ulong, S_IRUGO | S_IWUSR);
+static inline void print_max_stack(void)
+{
+	long i;
+	int size;
 
-static void dump_max_stack_trace(void) {
-    long i = 0;
-    int size;
-    printk(KERN_INFO "        Depth    Size   Location"
-			   "    (%d entries)\n"
+	pr_emerg("        Depth    Size   Location    (%d entries)\n"
 			   "        -----    ----   --------\n",
 			   max_stack_trace.nr_entries - 1);
-	
-	for (i=0; i<max_stack_trace.nr_entries; i++) {
-	    if (stack_dump_trace[i] == ULONG_MAX)
-		    continue;
 
-	    if (i+1 == max_stack_trace.nr_entries ||
-	        stack_dump_trace[i+1] == ULONG_MAX)
-		    size = stack_dump_index[i];
-	    else
-		    size = stack_dump_index[i] - stack_dump_index[i+1];
+	for (i = 0; i < max_stack_trace.nr_entries; i++) {
+		if (stack_dump_trace[i] == ULONG_MAX)
+			break;
+		if (i+1 == max_stack_trace.nr_entries ||
+				stack_dump_trace[i+1] == ULONG_MAX)
+			size = stack_dump_index[i];
+		else
+			size = stack_dump_index[i] - stack_dump_index[i+1];
 
-	    printk(KERN_INFO "%3ld) %8d   %5d   %pS\n", i, stack_dump_index[i], size, (void *)stack_dump_trace[i]);
-    }
+		pr_emerg("%3ld) %8d   %5d   %pS\n", i, stack_dump_index[i],
+				size, (void *)stack_dump_trace[i]);
+	}
 }
-#endif
 
 static inline void
 check_stack(unsigned long ip, unsigned long *stack)
 {
-	unsigned long this_size, flags;
-	unsigned long *p, *top, *start;
+	unsigned long this_size, flags; unsigned long *p, *top, *start;
 	static int tracer_frame;
 	int frame_size = ACCESS_ONCE(tracer_frame);
 	int i;
@@ -96,19 +86,6 @@ check_stack(unsigned long ip, unsigned long *stack)
 	/* Remove the frame of the tracer */
 	this_size -= frame_size;
 
-    /*LCH add for stack overflow debug, stack_tracer_enabled:
-     * 0:disable, 
-     * 1:record stack_max_size and stack_trace
-     * 2:only for overflow trigger kernel warning */
-#if defined (CONFIG_MTK_AEE_FEATURE) && defined (CONFIG_MT_ENG_BUILD)
-    if (stack_tracer_enabled == 2) {
-	    if (this_size < stack_overflow_thd) {
-	        return;
-	    }
-	    stack_trace_disabled = 1;
-	    max_stack_size = 0;
-    }
-#endif
 	if (this_size <= max_stack_size)
 		return;
 
@@ -129,8 +106,12 @@ check_stack(unsigned long ip, unsigned long *stack)
 
 	max_stack_size = this_size;
 
-	max_stack_trace.nr_entries	= 0;
-	max_stack_trace.skip		= 3;
+	max_stack_trace.nr_entries = 0;
+
+	if (using_ftrace_ops_list_func())
+		max_stack_trace.skip = 4;
+	else
+		max_stack_trace.skip = 3;
 
 	save_stack_trace(&max_stack_trace);
 
@@ -189,15 +170,14 @@ check_stack(unsigned long ip, unsigned long *stack)
 			i++;
 	}
 
+	if (task_stack_end_corrupted(current)) {
+		print_max_stack();
+		BUG();
+	}
+
  out:
 	arch_spin_unlock(&max_stack_lock);
 	local_irq_restore(flags);
-#if defined (CONFIG_MTK_AEE_FEATURE) && defined (CONFIG_MT_ENG_BUILD)
-    if (stack_tracer_enabled == 2) {
-        dump_max_stack_trace();
-	    aee_kernel_warning("[STACK_OVERFLOW_DEBUG]", "stack_size:%d", max_stack_size);
-	}
-#endif
 }
 
 static void
@@ -206,9 +186,6 @@ stack_trace_call(unsigned long ip, unsigned long parent_ip,
 {
 	unsigned long stack;
 	int cpu;
-
-	if (unlikely(stack_trace_disabled))
-		return;
 
 	preempt_disable_notrace();
 
@@ -436,7 +413,7 @@ static const struct file_operations stack_trace_filter_fops = {
 	.open = stack_trace_filter_open,
 	.read = seq_read,
 	.write = ftrace_filter_write,
-	.llseek = ftrace_filter_lseek,
+	.llseek = tracing_lseek,
 	.release = ftrace_regex_release,
 };
 
@@ -473,15 +450,9 @@ static __init int enable_stacktrace(char *str)
 {
 	if (strncmp(str, "_filter=", 8) == 0)
 		strncpy(stack_trace_filter_buf, str+8, COMMAND_LINE_SIZE);
-		
-/*LCH add for stack overflow debug */
-#if defined (CONFIG_MTK_AEE_FEATURE) && defined (CONFIG_MT_ENG_BUILD)
-	stack_tracer_enabled = 2;
-	last_stack_tracer_enabled = 2;
-#else
+
 	stack_tracer_enabled = 1;
 	last_stack_tracer_enabled = 1;
-#endif
 	return 1;
 }
 __setup("stacktrace", enable_stacktrace);
