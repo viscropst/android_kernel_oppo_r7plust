@@ -14,17 +14,17 @@ TRACE_EVENT(tracing_on,
 
 	TP_STRUCT__entry(
 		__field(int,	on)
-        __field(unsigned long, ip)
+		__field(unsigned long, ip)
 	),
 
 	TP_fast_assign(
 		__entry->on = on;
-        __entry->ip = ip;
+		__entry->ip = ip;
 	),
 
 	TP_printk("ftrace is %s caller=%pf",
 		__entry->on ? "enabled" : "disabled",
-        (void *)__entry->ip)
+		(void *)__entry->ip)
 );
 
 TRACE_EVENT(cpu_hotplug,
@@ -90,21 +90,22 @@ TRACE_EVENT(irq_exit,
 
 TRACE_EVENT(gpu_freq,
 
-    TP_PROTO(unsigned int frequency),
+	TP_PROTO(unsigned int frequency),
 
-    TP_ARGS(frequency),
+	TP_ARGS(frequency),
 
-    TP_STRUCT__entry(
-        __field(u32, frequency)
-    ),
+	TP_STRUCT__entry(
+		__field(u32, frequency)
+	),
 
-    TP_fast_assign(
-        __entry->frequency = frequency;
-    ),
+	TP_fast_assign(
+		__entry->frequency = frequency;
+	),
 
-    TP_printk("frequency=%lu", (unsigned long)__entry->frequency)
+	TP_printk("frequency=%lu", (unsigned long)__entry->frequency)
 );
 
 #endif /* _TRACE_MTK_EVENTS_H */
 /* This part must be outside protection */
 #include <trace/define_trace.h>
+

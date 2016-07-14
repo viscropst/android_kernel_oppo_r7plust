@@ -10,8 +10,11 @@
 
 
 /* Command for EMI TA */
- 
+
 #define TZCMD_EMI_REG    0
 #define TZCMD_EMI_CLR    1
- 
-#endif /* __TRUSTZONE_TA_EMI__ */
+#define TZCMD_EMI_RD     2
+#define TZCMD_EMI_WR     3
+
+
+#endif				/* __TRUSTZONE_TA_EMI__ */

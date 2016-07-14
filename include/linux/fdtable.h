@@ -59,29 +59,34 @@ struct files_struct {
 	struct file __rcu * fd_array[NR_OPEN_DEFAULT];
 };
 
-#define rcu_dereference_check_fdtable(files, fdtfd) \
-	(rcu_dereference_check((fdtfd), \
-			       lockdep_is_held(&(files)->file_lock) || \
-			       atomic_read(&(files)->count) == 1 || \
-			       rcu_my_thread_group_empty()))
-
-#define files_fdtable(files) \
-		(rcu_dereference_check_fdtable((files), (files)->fdt))
-
 struct file_operations;
 struct vfsmount;
 struct dentry;
 
-extern void __init files_defer_init(void);
+#define rcu_dereference_check_fdtable(files, fdtfd) \
+	rcu_dereference_check((fdtfd), lockdep_is_held(&(files)->file_lock))
 
-static inline struct file * fcheck_files(struct files_struct *files, unsigned int fd)
+#define files_fdtable(files) \
+	rcu_dereference_check_fdtable((files), (files)->fdt)
+
+/*
+ * The caller must ensure that fd table isn't shared or hold rcu or file lock
+ */
+static inline struct file *__fcheck_files(struct files_struct *files, unsigned int fd)
 {
-	struct file * file = NULL;
-	struct fdtable *fdt = files_fdtable(files);
+	struct fdtable *fdt = rcu_dereference_raw(files->fdt);
 
 	if (fd < fdt->max_fds)
-		file = rcu_dereference_check_fdtable(files, fdt->fd[fd]);
-	return file;
+		return rcu_dereference_raw(fdt->fd[fd]);
+	return NULL;
+}
+
+static inline struct file *fcheck_files(struct files_struct *files, unsigned int fd)
+{
+	rcu_lockdep_assert(rcu_read_lock_held() ||
+			   lockdep_is_held(&files->file_lock),
+			   "suspicious rcu_dereference_check() usage");
+	return __fcheck_files(files, fd);
 }
 
 /*
@@ -109,5 +114,12 @@ extern int __close_fd(struct files_struct *files,
 		      unsigned int fd);
 
 extern struct kmem_cache *files_cachep;
+
+/*M: add fdleak debug log*/
+#define FD_OVER_CHECK
+
+#ifdef FD_OVER_CHECK
+extern void fd_show_open_files(pid_t pid, struct files_struct *files, struct fdtable *fdt);
+#endif
 
 #endif /* __LINUX_FDTABLE_H */

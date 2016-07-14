@@ -1,14 +1,14 @@
 /* Header file for IP tables userspace logging, Version 1.8
  *
  * (C) 2000-2002 by Harald Welte <laforge@gnumonks.org>
- * 
+ *
  * Distributed under the terms of GNU GPL */
 
 #ifndef _IPT_ULOG_H
 #define _IPT_ULOG_H
 
 #ifndef NETLINK_NFLOG
-#define NETLINK_NFLOG 	5
+#define NETLINK_NFLOG	5
 #endif
 
 #define ULOG_DEFAULT_NLGROUP	1

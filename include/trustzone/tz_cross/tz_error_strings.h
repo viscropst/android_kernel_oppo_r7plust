@@ -6,7 +6,7 @@
 #ifndef __TZ_ERROR_STRINGS__
 #define __TZ_ERROR_STRINGS__
 
-static const char *TZ_ErrorStrings[] = {
+static const char * const TZ_ErrorStrings[] = {
 	"The operation was successful.",
 	"Non-specific cause.",
 	"Access privileges are not sufficient.",
@@ -28,20 +28,22 @@ static const char *TZ_ErrorStrings[] = {
 	"The handle is invalid.",
 	"Unknown error.",
 };
-#define TZ_ErrorStrings_num  (sizeof(TZ_ErrorStrings)/sizeof(TZ_ErrorStrings[0]))
+
+#define TZ_ErrorStrings_num \
+		(sizeof(TZ_ErrorStrings)/sizeof(TZ_ErrorStrings[0]))
 
 
 static const char *_TZ_GetErrorString(TZ_RESULT res)
 {
-    unsigned int num;
+	unsigned int num;
 
-    if (res == 0)
-        return TZ_ErrorStrings[0];
+	if (res == 0)
+		return TZ_ErrorStrings[0];
 
-    num = ((unsigned int)res & 0xffff) + 1;
-    if (num > (TZ_ErrorStrings_num-1))
-        num = TZ_ErrorStrings_num-1;
-    return TZ_ErrorStrings[num];
+	num = ((unsigned int)res & 0xffff) + 1;
+	if (num > (TZ_ErrorStrings_num - 1))
+		num = TZ_ErrorStrings_num - 1;
+	return TZ_ErrorStrings[num];
 }
 
-#endif /* __TZ_ERROR_STRINGS__ */
+#endif				/* __TZ_ERROR_STRINGS__ */

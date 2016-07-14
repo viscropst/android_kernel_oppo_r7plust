@@ -1,6 +1,6 @@
 #ifndef __TRUSTZONE_TZ_DDP__
 #define __TRUSTZONE_TZ_DDP__
- 
+
 #define TZ_TA_DDP_NAME "DDP TA"
 #define TZ_TA_DDP_UUID "dd7b73bc-0244-4072-b541-c9a53d8fbf5b"
 
@@ -44,15 +44,9 @@
 #define TZCMD_DDP_SET_DAPC_MODE     50
 
 #define TZCMD_DDP_WDMA_CONFIG       60
-#define TZCMD_DDP_WDMA_INTEN		61
-#define TZCMD_DDP_WDMA_INTSTA		62
-#define TZCMD_DDP_WDMA_START		63
-#define TZCMD_DDP_WDMA_STOP			64
-#define TZCMD_DDP_WDMA_RST			65
-#define TZCMD_DDP_WDMA1_CONFIG_UV	66
-
 
 #define TZCMD_DDP_RDMA_ADDR_CONFIG  70
 
 #define TZCMD_DDP_RDMA1_ADDR_CONFIG  71
-#endif /* __TRUSTZONE_TZ_DDP__ */
+
+#endif				/* __TRUSTZONE_TZ_DDP__ */

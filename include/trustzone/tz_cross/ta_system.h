@@ -3,8 +3,8 @@
 #ifndef __TRUSTZONE_TA_SYSTEM__
 #define __TRUSTZONE_TA_SYSTEM__
 
-/// Special handle for system connect.
-/// NOTE: Handle manager guarantee normal handle will have bit31=0.
+/* / Special handle for system connect. */
+/* / NOTE: Handle manager guarantee normal handle will have bit31=0. */
 #define MTEE_SESSION_HANDLE_SYSTEM 0xFFFF1234
 
 
@@ -17,4 +17,4 @@
 #define TZCMD_SYS_THREAD_CREATE       4
 
 
-#endif /* __TRUSTZONE_TA_SYSTEM__ */
+#endif				/* __TRUSTZONE_TA_SYSTEM__ */

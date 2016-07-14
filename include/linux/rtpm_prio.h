@@ -1,7 +1,9 @@
 #ifndef __KERNEL_RTPM_PRIO__
 #define __KERNEL_RTPM_PRIO__
 
-#define CONFIG_MT_RT_MONITOR
+/* since the monitor check code are removed, remove the definition here. */
+/*#define CONFIG_MT_RT_MONITOR*/
+
 #ifdef CONFIG_MT_RT_MONITOR
 #define MT_ALLOW_RT_PRIO_BIT 0x10000000
 #else
@@ -38,7 +40,7 @@
 
 #define RTPM_PRIO_TPD                       REG_RT_PRIO(4)
 #define RTPM_PRIO_KSDIOIRQ                  REG_RT_PRIO(1)
-#define RTPM_PRIO_MTLTE_SYS_SDIO_THREAD     REG_RT_PRIO(1)
+#define RTPM_PRIO_MTLTE_SYS_SDIO_THREAD     REG_RT_PRIO(96)
 
 #define RTPM_PRIO_AUDIO_PLAYBACK            REG_RT_PRIO(RTPM_PRIO_MM_GROUP_I+5)
 #define RTPM_PRIO_VIDEO_PLAYBACK_THREAD     REG_RT_PRIO(RTPM_PRIO_MM_GROUP_I+5)	/* TimeEventQueue */

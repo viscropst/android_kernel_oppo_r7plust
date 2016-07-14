@@ -13,17 +13,7 @@ extern int debug_locks_silent;
 
 static inline int __debug_locks_off(void)
 {
-    int ret;
-    ret = xchg(&debug_locks, 0);
-    if(ret)
-    {
-        printk("[KERN Warning] ERROR/WARN forces debug_lock off!\n");
-        printk("[KERN Warning] check backtrace:\n");
-        dump_stack();
-    }
-    return ret;
-    //return xchg(&debug_locks, 0);
-
+	return xchg(&debug_locks, 0);
 }
 
 /*

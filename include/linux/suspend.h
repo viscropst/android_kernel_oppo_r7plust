@@ -187,6 +187,13 @@ struct platform_suspend_ops {
 	void (*recover)(void);
 };
 
+struct platform_freeze_ops {
+	int (*begin)(void);
+	int (*prepare)(void);
+	void (*restore)(void);
+	void (*end)(void);
+};
+
 #ifdef CONFIG_SUSPEND
 /**
  * suspend_set_ops - set platform dependent suspend operations
@@ -194,6 +201,7 @@ struct platform_suspend_ops {
  */
 extern void suspend_set_ops(const struct platform_suspend_ops *ops);
 extern int suspend_valid_only_mem(suspend_state_t state);
+extern void freeze_set_ops(const struct platform_freeze_ops *ops);
 extern void freeze_wake(void);
 
 /**
@@ -220,6 +228,7 @@ extern int pm_suspend(suspend_state_t state);
 
 static inline void suspend_set_ops(const struct platform_suspend_ops *ops) {}
 static inline int pm_suspend(suspend_state_t state) { return -ENOSYS; }
+static inline void freeze_set_ops(const struct platform_freeze_ops *ops) {}
 static inline void freeze_wake(void) {}
 #endif /* !CONFIG_SUSPEND */
 
@@ -319,12 +328,10 @@ extern unsigned long get_safe_page(gfp_t gfp_mask);
 
 extern void hibernation_set_ops(const struct platform_hibernation_ops *ops);
 extern int hibernate(void);
-#ifdef CONFIG_MTK_HIBERNATION
-extern int pre_hibernate(void);
-extern int mtk_hibernate(void);
-extern int mtk_hibernate_abort(void);
-#endif
 extern bool system_entering_hibernation(void);
+extern bool hibernation_available(void);
+asmlinkage int swsusp_save(void);
+extern struct pbe *restore_pblist;
 #else /* CONFIG_HIBERNATION */
 static inline void register_nosave_region(unsigned long b, unsigned long e) {}
 static inline void register_nosave_region_late(unsigned long b, unsigned long e) {}
@@ -335,6 +342,7 @@ static inline void swsusp_unset_page_free(struct page *p) {}
 static inline void hibernation_set_ops(const struct platform_hibernation_ops *ops) {}
 static inline int hibernate(void) { return -ENOSYS; }
 static inline bool system_entering_hibernation(void) { return false; }
+static inline bool hibernation_available(void) { return false; }
 #endif /* CONFIG_HIBERNATION */
 
 /* Hibernation and suspend events */
@@ -365,10 +373,14 @@ extern int unregister_pm_notifier(struct notifier_block *nb);
 extern bool events_check_enabled;
 
 extern bool pm_wakeup_pending(void);
+extern void pm_system_wakeup(void);
+extern void pm_wakeup_clear(void);
 extern bool pm_get_wakeup_count(unsigned int *count, bool block);
 extern bool pm_save_wakeup_count(unsigned int count);
 extern void pm_wakep_autosleep_enabled(bool set);
+extern void pm_print_active_wakeup_sources(void);
 extern void pm_get_active_wakeup_sources(char *pending_sources, size_t max);
+
 static inline void lock_system_sleep(void)
 {
 	current->flags |= PF_FREEZER_SKIP;
@@ -411,6 +423,8 @@ static inline int unregister_pm_notifier(struct notifier_block *nb)
 #define pm_notifier(fn, pri)	do { (void)(fn); } while (0)
 
 static inline bool pm_wakeup_pending(void) { return false; }
+static inline void pm_system_wakeup(void) {}
+static inline void pm_wakeup_clear(void) {}
 
 static inline void lock_system_sleep(void) {}
 static inline void unlock_system_sleep(void) {}
@@ -421,81 +435,6 @@ static inline void unlock_system_sleep(void) {}
 extern bool pm_print_times_enabled;
 #else
 #define pm_print_times_enabled	(false)
-#endif
-
-enum {
-	TOI_CAN_HIBERNATE,
-	TOI_CAN_RESUME,
-	TOI_RESUME_DEVICE_OK,
-	TOI_NORESUME_SPECIFIED,
-	TOI_SANITY_CHECK_PROMPT,
-	TOI_CONTINUE_REQ,
-	TOI_RESUMED_BEFORE,
-	TOI_BOOT_TIME,
-	TOI_NOW_RESUMING,
-	TOI_IGNORE_LOGLEVEL,
-	TOI_TRYING_TO_RESUME,
-	TOI_LOADING_ALT_IMAGE,
-	TOI_STOP_RESUME,
-	TOI_IO_STOPPED,
-	TOI_NOTIFIERS_PREPARE,
-	TOI_CLUSTER_MODE,
-	TOI_BOOT_KERNEL,
-};
-
-#ifdef CONFIG_TOI
-
-/* Used in init dir files */
-extern unsigned long toi_state;
-#define set_toi_state(bit) (set_bit(bit, &toi_state))
-#define clear_toi_state(bit) (clear_bit(bit, &toi_state))
-#define test_toi_state(bit) (test_bit(bit, &toi_state))
-extern int toi_running;
-
-#define test_action_state(bit) (test_bit(bit, &toi_bkd.toi_action))
-extern int try_tuxonice_hibernate(void);
-#ifdef CONFIG_TOI_ENHANCE
-extern int toi_abort_hibernate(void);
-extern int toi_hibernate_fatalerror(void);
-#endif
-
-#else /* !CONFIG_TOI */
-
-#define toi_state		(0)
-#define set_toi_state(bit) do { } while (0)
-#define clear_toi_state(bit) do { } while (0)
-#define test_toi_state(bit) (0)
-#define toi_running (0)
-
-static inline int try_tuxonice_hibernate(void) { return 0; }
-#define test_action_state(bit) (0)
-#ifdef CONFIG_TOI_ENHANCE
-static inline int toi_abort_hibernate(void) { return 0; }
-static inline int toi_hibernate_fatalerror(void) { return 0; }
-#endif
-
-#endif /* CONFIG_TOI */
-
-#ifdef CONFIG_HIBERNATION
-#ifdef CONFIG_TOI
-extern void try_tuxonice_resume(void);
-#else
-#define try_tuxonice_resume() do { } while (0)
-#endif
-
-extern int resume_attempted;
-extern int software_resume(void);
-
-static inline void check_resume_attempted(void)
-{
-	if (resume_attempted)
-		return;
-
-	software_resume();
-}
-#else
-#define check_resume_attempted() do { } while (0)
-#define resume_attempted (0)
 #endif
 
 #ifdef CONFIG_PM_AUTOSLEEP

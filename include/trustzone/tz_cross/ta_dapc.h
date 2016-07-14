@@ -10,8 +10,8 @@
 
 
 /* Command for DAPC TA */
- 
+
 #define TZCMD_DAPC_IRQ      0
 #define TZCMD_DAPC_TEST     1
- 
-#endif /* __TRUSTZONE_TA_DAPC__ */
+
+#endif				/* __TRUSTZONE_TA_DAPC__ */

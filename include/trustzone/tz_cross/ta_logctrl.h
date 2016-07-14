@@ -18,4 +18,4 @@
 /* Command for Test TA */
 #define TZCMD_LOG_CTRL_SET_LVL   0
 
-#endif /* __TA_LOG_CTRL_H__ */
+#endif				/* __TA_LOG_CTRL_H__ */

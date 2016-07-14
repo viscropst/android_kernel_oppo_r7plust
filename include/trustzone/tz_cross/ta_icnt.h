@@ -15,4 +15,4 @@
 #define TZCMD_ICNT_RATE         1
 
 
-#endif /* __TRUSTZONE_TA_INC_CNT__ */
+#endif				/* __TRUSTZONE_TA_INC_CNT__ */

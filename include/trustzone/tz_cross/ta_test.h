@@ -25,4 +25,4 @@
 #define TZCMD_TEST_CP_NBUF2SBUF 11
 #define TZCMD_TEST_THREAD       12
 
-#endif /* __TRUSTZONE_TA_TEST__ */
+#endif				/* __TRUSTZONE_TA_TEST__ */

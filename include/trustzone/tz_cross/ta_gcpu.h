@@ -12,7 +12,6 @@
 #define TZCMD_GCPU_SELFTEST                 0
 #define TZCMD_GCPU_SUSPEND                  1
 #define TZCMD_GCPU_KERNEL_INIT_DONE         2
+#define TZCMD_GCPU_AES_CBC_PERFORMANCE      3
 
-
-
-#endif /* __TRUSTZONE_TA_GCPU__ */
+#endif				/* __TRUSTZONE_TA_GCPU__ */

@@ -14,22 +14,23 @@
 #define TZCMD_HACC_INIT     0
 #define TZCMD_HACC_INTERNAL 1
 #define TZCMD_SECURE_ALGO   2
+#define TZCMD_GET_UUID      3
 
 typedef struct _ta_crypto_data_ {
-    unsigned int    size;
-    unsigned char   bAC;
-    unsigned int    user;     /* HACC_USER */
-    unsigned char   bDoLock;
-    unsigned int    aes_type; /* AES_OPS */
-    unsigned char   bEn;    
+	unsigned int size;
+	unsigned char bAC;
+	unsigned int user;	/* HACC_USER */
+	unsigned char bDoLock;
+	unsigned int aes_type;	/* AES_OPS */
+	unsigned char bEn;
 } ta_crypto_data;
 
 typedef struct _ta_secure_algo_data_ {
-    unsigned char  direction;
-    unsigned int   contentAddr;
-    unsigned int   contentLen;
-    unsigned char *customSeed;
-    unsigned char *resText;
+	unsigned char direction;
+	unsigned int contentAddr;
+	unsigned int contentLen;
+	unsigned char *customSeed;
+	unsigned char *resText;
 } ta_secure_algo_data;
 
-#endif /* __TRUSTZONE_SEJ_TA_TEST__ */
+#endif				/* __TRUSTZONE_SEJ_TA_TEST__ */

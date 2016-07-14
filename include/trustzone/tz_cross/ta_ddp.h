@@ -2,7 +2,7 @@
 #define __TRUSTZONE_TA_DDP__
 
 #define TZ_TA_DDPU_NAME "DDPU TA"
-#define TZ_TA_DDPU_UUID "11d28272-5c14-47a9-9f2b-180dc48ec29f" 
+#define TZ_TA_DDPU_UUID "11d28272-5c14-47a9-9f2b-180dc48ec29f"
 
 /* Data Structure for Test TA */
 /* You should define data structure used both in REE/TEE here
@@ -48,4 +48,4 @@
 
 #define TZCMD_DDPU_SET_DAPC_MODE      50
 
-#endif /* __TRUSTZONE_TA_DDP__ */
+#endif				/* __TRUSTZONE_TA_DDP__ */

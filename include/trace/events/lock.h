@@ -15,8 +15,8 @@ TRACE_EVENT(mutex_contended,
 	TP_ARGS(lock, ip),
 
 	TP_STRUCT__entry(
-		__string(	name, 	lock->name	)
-		__field(	void *, lockdep_addr	)
+		__string(name, lock->name)
+		__field(void *, lockdep_addr)
 	),
 
 	TP_fast_assign(
@@ -34,8 +34,8 @@ TRACE_EVENT(mutex_acquired,
 	TP_ARGS(lock, ip),
 
 	TP_STRUCT__entry(
-		__string(	name, 	lock->name	)
-		__field(	void *, lockdep_addr	)
+		__string(name, lock->name)
+		__field(void *, lockdep_addr)
 	),
 
 	TP_fast_assign(

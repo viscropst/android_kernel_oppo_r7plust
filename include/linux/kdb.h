@@ -84,14 +84,6 @@ extern const char *kdb_diemsg;
 
 extern int kdb_flags;	/* Global flags, see kdb_state for per cpu state */
 
-DECLARE_PER_CPU(int, kdb_in_use);	/* Indicate if in kdb mode or not */
-extern int check_timeout;			/* If user press any key in kdb, do not check timeout */
-extern int force_panic;				/* Timeout and force kernel panic  */
-extern unsigned long long enter_time;	/* keep the time of entering kdb */
-#define KE_TIMEOUT_SEC	120			/* default value : 120 seconds timeout */
-extern int mtk_set_kgdboc_var(void);
-
-
 extern void kdb_save_flags(void);
 extern void kdb_restore_flags(void);
 
@@ -117,6 +109,7 @@ typedef enum {
 	KDB_REASON_RECURSE,	/* Recursive entry to kdb;
 				 * regs probably valid */
 	KDB_REASON_SSTEP,	/* Single Step trap. - regs valid */
+	KDB_REASON_SYSTEM_NMI,	/* In NMI due to SYSTEM cmd; regs valid */
 } kdb_reason_t;
 
 extern int kdb_trap_printk;

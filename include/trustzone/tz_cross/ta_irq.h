@@ -23,4 +23,4 @@
 #define TZ_IRQF_LOW               0
 #define TZ_IRQF_HIGH              2
 
-#endif /* __TRUSTZONE_TA_IRQ__ */
+#endif				/* __TRUSTZONE_TA_IRQ__ */
