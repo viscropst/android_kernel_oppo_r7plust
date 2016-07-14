@@ -22,22 +22,23 @@
 #include <linux/of.h>
 #include <linux/string.h>
 
+#if defined(CONFIG_MTK_PSCI)
+#include <mt_cpu_psci_ops.h>
+#endif
+
 extern const struct cpu_operations smp_spin_table_ops;
 extern const struct cpu_operations cpu_psci_ops;
-#ifdef CONFIG_MTK_PSCI
-extern const struct cpu_operations mt_cpu_psci_ops;
-#endif
 
 const struct cpu_operations *cpu_ops[NR_CPUS];
 
 static const struct cpu_operations *supported_cpu_ops[] __initconst = {
 #ifdef CONFIG_SMP
 	&smp_spin_table_ops,
-	&cpu_psci_ops,
 #ifdef CONFIG_MTK_PSCI
 	&mt_cpu_psci_ops,
 #endif
 #endif
+	&cpu_psci_ops,
 	NULL,
 };
 
@@ -61,6 +62,7 @@ static const struct cpu_operations * __init cpu_get_ops(const char *name)
 int __init cpu_read_ops(struct device_node *dn, int cpu)
 {
 	const char *enable_method = of_get_property(dn, "enable-method", NULL);
+
 	if (!enable_method) {
 		/*
 		 * The boot CPU may not have an enable method (e.g. when
@@ -74,8 +76,8 @@ int __init cpu_read_ops(struct device_node *dn, int cpu)
 
 	cpu_ops[cpu] = cpu_get_ops(enable_method);
 	if (!cpu_ops[cpu]) {
-		pr_err("%s: invalid enable-method property: %s\n",
-		       dn->full_name, enable_method);
+		pr_warn("%s: unsupported enable-method property: %s\n",
+			dn->full_name, enable_method);
 		return -EOPNOTSUPP;
 	}
 
@@ -84,22 +86,11 @@ int __init cpu_read_ops(struct device_node *dn, int cpu)
 
 void __init cpu_read_bootcpu_ops(void)
 {
-	struct device_node *dn = NULL;
-	u64 mpidr = cpu_logical_map(0);
+	struct device_node *dn = of_get_cpu_node(0, NULL);
 
-	while ((dn = of_find_node_by_type(dn, "cpu"))) {
-		u64 hwid;
-		const __be32 *prop;
-
-		prop = of_get_property(dn, "reg", NULL);
-		if (!prop)
-			continue;
-
-		hwid = of_read_number(prop, of_n_addr_cells(dn));
-		if (hwid == mpidr) {
-			cpu_read_ops(dn, 0);
-			of_node_put(dn);
-			return;
-		}
+	if (!dn) {
+		pr_err("Failed to find device node for boot cpu\n");
+		return;
 	}
+	cpu_read_ops(dn, 0);
 }

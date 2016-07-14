@@ -23,6 +23,7 @@
 #include <linux/compiler.h>
 #include <linux/linkage.h>
 #include <linux/irqflags.h>
+#include <linux/reboot.h>
 
 struct pt_regs;
 
@@ -35,19 +36,20 @@ void arm64_notify_die(const char *str, struct pt_regs *regs,
 void hook_debug_fault_code(int nr, int (*fn)(unsigned long, unsigned int,
 					     struct pt_regs *),
 			   int sig, int code, const char *name);
-#ifdef CONFIG_MEDIATEK_SOLUTION 
+
+#ifdef CONFIG_MEDIATEK_SOLUTION
 void hook_fault_code(int nr,
 		int (*fn)(unsigned long, unsigned int, struct pt_regs *),
 		int sig, int code, const char *name);
 #endif
+
 
 struct mm_struct;
 extern void show_pte(struct mm_struct *mm, unsigned long addr);
 extern void __show_regs(struct pt_regs *);
 
 void soft_restart(unsigned long);
-extern void (*arm_pm_restart)(char str, const char *cmd);
-extern void (*arm_pm_idle)(void);
+extern void (*arm_pm_restart)(enum reboot_mode reboot_mode, const char *cmd);
 
 #define UDBG_UNDEFINED	(1 << 0)
 #define UDBG_SYSCALL	(1 << 1)

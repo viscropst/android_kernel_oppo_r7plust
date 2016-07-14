@@ -1,13 +1,14 @@
 /*
- * linux/arch/arm64/crypto/aes-glue.c - wrapper code for ARMv8 AES
+ * linux/arch/arm64/crypto/aes-armv8-bcm-glue.c - wrapper code for ARMv8 Aarch32 CE
  *
- * Copyright (C) 2013 Linaro Ltd <ard.biesheuvel@linaro.org>
+ * Copyright (C) 2014 Mediatek Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
 
+#include <asm/neon.h>
 #include <crypto/aes.h>
 #include <crypto/ablk_helper.h>
 #include <crypto/algapi.h>
@@ -31,14 +32,14 @@ static int cbc_encrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
 	blkcipher_walk_init(&walk, dst, src, nbytes);
 	err = blkcipher_walk_virt(desc, &walk);
 
-	//kernel_neon_begin();
+	kernel_neon_begin();
 	for (first = 1; (blocks = (walk.nbytes / AES_BLOCK_SIZE)); first = 0) {
 		aes_v8_cbc_encrypt(walk.dst.virt.addr, walk.src.virt.addr,
 				(u8 *)ctx->key_enc, rounds, blocks, walk.iv,
 				first);
 		err = blkcipher_walk_done(desc, &walk, walk.nbytes % AES_BLOCK_SIZE);
 	}
-	//kernel_neon_end();
+	kernel_neon_end();
 	return err;
 }
 
@@ -54,20 +55,20 @@ static int cbc_decrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
 	blkcipher_walk_init(&walk, dst, src, nbytes);
 	err = blkcipher_walk_virt(desc, &walk);
 
-	//kernel_neon_begin();
+	kernel_neon_begin();
 	for (first = 1; (blocks = (walk.nbytes / AES_BLOCK_SIZE)); first = 0) {
 		aes_v8_cbc_decrypt(walk.dst.virt.addr, walk.src.virt.addr,
 				(u8 *)ctx->key_dec, rounds, blocks, walk.iv,
 				first);
 		err = blkcipher_walk_done(desc, &walk, walk.nbytes % AES_BLOCK_SIZE);
 	}
-	//kernel_neon_end();
+	kernel_neon_end();
 	return err;
 }
 
 static struct crypto_alg aes_algs[] = { {
-	.cra_name		    = "__cbc-aes-armv8" ,
-	.cra_driver_name	= "__driver-cbc-aes-armv8" ,
+	.cra_name		    = "__cbc-aes-ce" ,
+	.cra_driver_name	= "__driver-cbc-aes-ce" ,
 	.cra_priority		= 0,
 	.cra_flags		    = CRYPTO_ALG_TYPE_BLKCIPHER,
 	.cra_blocksize		= AES_BLOCK_SIZE,
@@ -85,7 +86,7 @@ static struct crypto_alg aes_algs[] = { {
 	},
 }, {
 	.cra_name		= "cbc(aes)",
-	.cra_driver_name	= "cbc-aes-armv8",
+	.cra_driver_name	= "cbc-aes-ce",
 	.cra_priority		= 300,
 	.cra_flags		= CRYPTO_ALG_TYPE_ABLKCIPHER|CRYPTO_ALG_ASYNC,
 	.cra_blocksize		= AES_BLOCK_SIZE,
@@ -118,3 +119,6 @@ static void __exit aes_exit(void)
 module_init(aes_init);
 module_exit(aes_exit);
 
+MODULE_DESCRIPTION("Bit sliced AES in CBC modes using CE");
+MODULE_AUTHOR("Mediatek Inc.");
+MODULE_LICENSE("GPL");

@@ -4,18 +4,20 @@
 
 #if __ARM_ARCH__>=7
 
+.fpu crypto-neon-fp-armv8
+
 .text
 
 # AES assembly implementation for ARMv8 AArch32
-#   - AES_encrypt
-#   - AES_decrypt
-#   - private_AES_set_encrypt_key
-#   - private_AES_set_decrypt_key
+#   - AES_encrypt_ce
+#   - AES_decrypt_ce
+#   - private_AES_set_encrypt_key_ce
+#   - private_AES_set_decrypt_key_ce
 
-# void AES_encrypt(const unsigned char *in, unsigned char *out,
+# void AES_encrypt_ce(const unsigned char *in, unsigned char *out,
 #      const AES_KEY *key) {
 .align  5
-ENTRY(AES_encrypt)
+ENTRY(AES_encrypt_ce)
     vld1.8      {d24-d25}, [r2]!
     vld1.8      {d0-d1}, [r0]
     ldr         r3, [r2, #240-16]
@@ -37,12 +39,12 @@ ENTRY(AES_encrypt)
     veor.8      q0, q0, q14
     vst1.8      {d0-d1}, [r1]
     bx          lr
-ENDPROC(AES_encrypt)
+ENDPROC(AES_encrypt_ce)
 
-# void AES_decrypt(const unsigned char *in, unsigned char *out,
+# void AES_decrypt_ce(const unsigned char *in, unsigned char *out,
 #      const AES_KEY *key) {
 .align  5
-ENTRY(AES_decrypt)
+ENTRY(AES_decrypt_ce)
     vld1.8      {d24-d25}, [r2]!
     vld1.8      {d0-d1}, [r0]
     ldr         r3, [r2, #240-16]
@@ -64,7 +66,7 @@ ENTRY(AES_decrypt)
     veor.8      q0, q0, q14
     vst1.8      {d0-d1}, [r1]
     bx lr
-ENDPROC(AES_decrypt)
+ENDPROC(AES_decrypt_ce)
 
 
 .align 5
@@ -74,10 +76,10 @@ private_rcon:
 .long   0x0000001b,0x0000001b,0x0000001b,0x0000001b
 
 
-# int private_AES_set_encrypt_key(const unsigned char *userKey, const int bits,
+# int private_AES_set_encrypt_key_ce(const unsigned char *userKey, const int bits,
 #      AES_KEY *key) {
 .align  5
-ENTRY(private_AES_set_encrypt_key)
+ENTRY(private_AES_set_encrypt_key_ce)
     adr       r3,  private_rcon
     cmp       r1,  #192
     veor      q0,  q0,  q0
@@ -270,13 +272,13 @@ ENTRY(private_AES_set_encrypt_key)
     str       r12, [r2]
     eor       r0,  r0,  r0
     bx        lr
-ENDPROC(private_AES_set_encrypt_key)
+ENDPROC(private_AES_set_encrypt_key_ce)
 
 
-# int private_AES_set_decrypt_key(const unsigned char *userKey, const int bits,
+# int private_AES_set_decrypt_key_ce(const unsigned char *userKey, const int bits,
 #       AES_KEY *key) {
 .align  5
-ENTRY(private_AES_set_decrypt_key)
+ENTRY(private_AES_set_decrypt_key_ce)
     adr       r3,  private_rcon
     cmp       r1,  #192
     veor      q0,  q0,  q0
@@ -518,7 +520,7 @@ ENTRY(private_AES_set_decrypt_key)
     vst1.32   {q8},[r2]
     eor       r0,  r0,  r0
     bx        lr
-ENDPROC(private_AES_set_decrypt_key)
+ENDPROC(private_AES_set_decrypt_key_ce)
 
 .align  2
 

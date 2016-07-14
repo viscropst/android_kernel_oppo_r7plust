@@ -9,17 +9,14 @@
 #include <linux/gfp.h>
 #include <linux/suspend.h>
 #include <linux/bootmem.h>
-#include <linux/export.h>
 
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/mmzone.h>
+#include <asm/sections.h>
 
 /* Defined in hibernate_asm_32.S */
 extern int restore_image(void);
-
-/* References to section boundaries */
-extern const void __nosave_begin, __nosave_end;
 
 /* Pointer to the temporary resume page tables */
 pgd_t *resume_pg_dir;
@@ -162,7 +159,6 @@ int swsusp_arch_resume(void)
 	restore_image();
 	return 0;
 }
-EXPORT_SYMBOL_GPL(swsusp_arch_resume);
 
 /*
  *	pfn_is_nosave - check if given pfn is in the 'nosave' section

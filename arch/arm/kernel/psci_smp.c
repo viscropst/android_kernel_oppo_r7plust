@@ -22,6 +22,11 @@
 #include <asm/psci.h>
 #include <asm/smp_plat.h>
 
+#if defined(CONFIG_ARCH_MT6735) || defined(CONFIG_ARCH_MT6735M) || \
+	defined(CONFIG_ARCH_MT6753)
+#include <mt-smp.h>
+#endif
+
 /*
  * psci_smp assumes that the following is true about PSCI:
  *
@@ -47,13 +52,10 @@
 
 extern void secondary_startup(void);
 
-extern void __init mt_smp_prepare_cpus(unsigned int max_cpus);
-extern void mt_smp_secondary_init(unsigned int cpu);
-extern int mt_smp_boot_secondary(unsigned int cpu, struct task_struct *idle);
-extern int mt_cpu_kill(unsigned int cpu);
-
 static int psci_boot_secondary(unsigned int cpu, struct task_struct *idle)
 {
+#if defined(CONFIG_ARCH_MT6735) || defined(CONFIG_ARCH_MT6735M) || \
+	defined(CONFIG_ARCH_MT6753)
 	int ret = -1;
 
 	if (psci_ops.cpu_on)
@@ -71,52 +73,64 @@ static int psci_boot_secondary(unsigned int cpu, struct task_struct *idle)
 		return -ENODEV;
 	}
 	return 0;
+#else
+	if (psci_ops.cpu_on)
+		return psci_ops.cpu_on(cpu_logical_map(cpu),
+				       __pa(secondary_startup));
+	return -ENODEV;
+#endif
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
 void __ref psci_cpu_die(unsigned int cpu)
 {
-	const struct psci_power_state ps = {
-		 .type = PSCI_POWER_STATE_TYPE_POWER_DOWN,
-	};
+       const struct psci_power_state ps = {
+               .type = PSCI_POWER_STATE_TYPE_POWER_DOWN,
+       };
 
-	if (psci_ops.cpu_off)
-		 psci_ops.cpu_off(ps);
+       if (psci_ops.cpu_off)
+               psci_ops.cpu_off(ps);
 
-	/* We should never return */
-	panic("psci: cpu %d failed to shutdown\n", cpu);
+       /* We should never return */
+       panic("psci: cpu %d failed to shutdown\n", cpu);
 }
 
+#if defined(CONFIG_ARCH_MT6735) || defined(CONFIG_ARCH_MT6735M) || \
+	defined(CONFIG_ARCH_MT6753)
 int __ref psci_cpu_kill(unsigned int cpu)
 {
-	//TODO: do more accurate synchornization between src CPU and dst CPU when applying psci
-	//int err, i;
-	//
-	//if (!psci_ops.affinity_info)
-	//	return 1;
-	///*
-	// * cpu_kill could race with cpu_die and we can
-	// * potentially end up declaring this cpu undead
-	// * while it is dying. So, try again a few times.
-	// */
-	//
-	//for (i = 0; i < 10; i++) {
-	//	err = psci_ops.affinity_info(cpu_logical_map(cpu), 0);
-	//	if (err == PSCI_0_2_AFFINITY_LEVEL_OFF) {
-	//		pr_info("CPU%d killed.\n", cpu);
-	//		return 1;
-	//	}
-	//
-	//	msleep(10);
-	//	pr_info("Retrying again to check for CPU kill\n");
-	//}
-	//
-	//pr_warn("CPU%d may not have shut down cleanly (AFFINITY_INFO reports %d)\n",
-	//		cpu, err);
-	///* Make platform_cpu_kill() fail. */
-	//return 0;
 	return mt_cpu_kill(cpu);
 }
+#else
+int __ref psci_cpu_kill(unsigned int cpu)
+{
+	int err, i;
+
+	if (!psci_ops.affinity_info)
+		return 1;
+	/*
+	 * cpu_kill could race with cpu_die and we can
+	 * potentially end up declaring this cpu undead
+	 * while it is dying. So, try again a few times.
+	 */
+
+	for (i = 0; i < 10; i++) {
+		err = psci_ops.affinity_info(cpu_logical_map(cpu), 0);
+		if (err == PSCI_0_2_AFFINITY_LEVEL_OFF) {
+			pr_info("CPU%d killed.\n", cpu);
+			return 1;
+		}
+
+		msleep(10);
+		pr_info("Retrying again to check for CPU kill\n");
+	}
+
+	pr_warn("CPU%d may not have shut down cleanly (AFFINITY_INFO reports %d)\n",
+			cpu, err);
+	/* Make platform_cpu_kill() fail. */
+	return 0;
+}
+#endif
 
 #endif
 
@@ -127,12 +141,17 @@ bool __init psci_smp_available(void)
 }
 
 struct smp_operations __initdata psci_smp_ops = {
+#if defined(CONFIG_ARCH_MT6735) || defined(CONFIG_ARCH_MT6735M) || \
+	defined(CONFIG_ARCH_MT6753)
 	.smp_prepare_cpus       = mt_smp_prepare_cpus,
-	.smp_boot_secondary	    = psci_boot_secondary,
-	// FIXME: better way?
+#endif
+	.smp_boot_secondary	= psci_boot_secondary,
+#if defined(CONFIG_ARCH_MT6735) || defined(CONFIG_ARCH_MT6735M) || \
+	defined(CONFIG_ARCH_MT6753)
 	.smp_secondary_init     = mt_smp_secondary_init,
+#endif
 #ifdef CONFIG_HOTPLUG_CPU
-	.cpu_die		        = psci_cpu_die,
-	.cpu_kill		        = psci_cpu_kill,
+	.cpu_die		= psci_cpu_die,
+	.cpu_kill		= psci_cpu_kill,
 #endif
 };

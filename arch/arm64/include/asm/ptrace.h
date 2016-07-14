@@ -21,6 +21,10 @@
 
 #include <uapi/asm/ptrace.h>
 
+/* Current Exception Level values, as contained in CurrentEL */
+#define CurrentEL_EL1		(1 << 2)
+#define CurrentEL_EL2		(2 << 2)
+
 /* AArch32-specific ptrace requests */
 #define COMPAT_PTRACE_GETREGS		12
 #define COMPAT_PTRACE_SETREGS		13
@@ -42,6 +46,7 @@
 #define COMPAT_PSR_MODE_UND	0x0000001b
 #define COMPAT_PSR_MODE_SYS	0x0000001f
 #define COMPAT_PSR_T_BIT	0x00000020
+#define COMPAT_PSR_E_BIT	0x00000200
 #define COMPAT_PSR_F_BIT	0x00000040
 #define COMPAT_PSR_I_BIT	0x00000080
 #define COMPAT_PSR_A_BIT	0x00000100
@@ -53,6 +58,13 @@
 #define COMPAT_PSR_Z_BIT	0x40000000
 #define COMPAT_PSR_N_BIT	0x80000000
 #define COMPAT_PSR_IT_MASK	0x0600fc00	/* If-Then execution state mask */
+
+#ifdef CONFIG_CPU_BIG_ENDIAN
+#define COMPAT_PSR_ENDSTATE	COMPAT_PSR_E_BIT
+#else
+#define COMPAT_PSR_ENDSTATE	0
+#endif
+
 /*
  * These are 'magic' values for PTRACE_PEEKUSR that return info about where a
  * process is located in memory.
@@ -60,15 +72,6 @@
 #define COMPAT_PT_TEXT_ADDR		0x10000
 #define COMPAT_PT_DATA_ADDR		0x10004
 #define COMPAT_PT_TEXT_END_ADDR		0x10008
-
-/*
- * used to skip a system call when tracer changes its number to -1
- * with ptrace(PTRACE_SET_SYSCALL)
- */
-#define RET_SKIP_SYSCALL	-1
-#define RET_SKIP_SYSCALL_TRACE	-2
-#define IS_SKIP_SYSCALL(no)	((int)(no & 0xffffffff) == -1)
-
 #ifndef __ASSEMBLY__
 
 /* sizeof(struct user) for AArch32 */
@@ -76,6 +79,7 @@
 
 /* Architecturally defined mapping between AArch32 and AArch64 registers */
 #define compat_usr(x)	regs[(x)]
+#define compat_fp	regs[11]
 #define compat_sp	regs[13]
 #define compat_lr	regs[14]
 #define compat_sp_hyp	regs[15]
@@ -184,14 +188,6 @@ extern unsigned long profile_pc(struct pt_regs *regs);
 #else
 #define profile_pc(regs) instruction_pointer(regs)
 #endif
-
-/*
- * True if instr is a 32-bit thumb instruction. This works if instr
- * is the first or only half-word of a thumb instruction. It also works
- * when instr holds all 32-bits of a wide thumb instruction if stored
- * in the form (first_half<<16)|(second_half)
- */
-#define is_wide_instruction(instr)	((unsigned)(instr) >= 0xe800)
 
 #endif /* __ASSEMBLY__ */
 #endif

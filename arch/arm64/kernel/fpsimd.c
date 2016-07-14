@@ -17,13 +17,13 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <linux/cpu_pm.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/signal.h>
 #include <linux/hardirq.h>
 #include <linux/cpu.h>
-
 
 #include <asm/fpsimd.h>
 #include <asm/cputype.h>
@@ -157,10 +157,8 @@ void fpsimd_thread_switch(struct task_struct *next)
 
 void fpsimd_flush_thread(void)
 {
-	preempt_disable();
 	memset(&current->thread.fpsimd_state, 0, sizeof(struct fpsimd_state));
 	set_thread_flag(TIF_FOREIGN_FPSTATE);
-	preempt_enable();
 }
 
 /*
@@ -299,20 +297,33 @@ static void fpsimd_pm_init(void)
 static inline void fpsimd_pm_init(void) { }
 #endif /* CONFIG_CPU_PM */
 
-#ifdef CONFIG_MEDIATEK_SOLUTION
-static int fpsimd_hotplug(struct notifier_block *b, unsigned long action, void *hcpu)
+#ifdef CONFIG_HOTPLUG_CPU
+static int fpsimd_cpu_hotplug_notifier(struct notifier_block *nfb,
+				       unsigned long action,
+				       void *hcpu)
 {
-	if (action == CPU_DYING || action == CPU_DYING_FROZEN) {
-		if (current->mm && !test_thread_flag(TIF_FOREIGN_FPSTATE))
-			fpsimd_save_state(&current->thread.fpsimd_state);
-		this_cpu_write(fpsimd_last_state, NULL);
-	} else if (action == CPU_STARTING || action == CPU_STARTING_FROZEN){
-		if (current->mm)
-			set_thread_flag(TIF_FOREIGN_FPSTATE);
+	unsigned int cpu = (long)hcpu;
+
+	switch (action) {
+	case CPU_DEAD:
+	case CPU_DEAD_FROZEN:
+		per_cpu(fpsimd_last_state, cpu) = NULL;
+		break;
 	}
-		
 	return NOTIFY_OK;
 }
+
+static struct notifier_block fpsimd_cpu_hotplug_notifier_block = {
+	.notifier_call = fpsimd_cpu_hotplug_notifier,
+};
+
+static inline void fpsimd_hotplug_init(void)
+{
+	register_cpu_notifier(&fpsimd_cpu_hotplug_notifier_block);
+}
+
+#else
+static inline void fpsimd_hotplug_init(void) { }
 #endif
 
 /*
@@ -333,9 +344,8 @@ static int __init fpsimd_init(void)
 	else
 		elf_hwcap |= HWCAP_ASIMD;
 
-#ifdef CONFIG_MEDIATEK_SOLUTION
-	hotcpu_notifier(fpsimd_hotplug, 0);
-#endif
+	fpsimd_pm_init();
+	fpsimd_hotplug_init();
 
 	return 0;
 }

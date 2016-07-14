@@ -20,11 +20,16 @@ LIBGCC 		:= $(shell $(CC) $(KBUILD_CFLAGS) -print-libgcc-file-name)
 KBUILD_DEFCONFIG := defconfig
 
 KBUILD_CFLAGS	+= -mgeneral-regs-only
+KBUILD_CFLAGS	+= -fno-pic
+ifeq ($(CONFIG_CPU_BIG_ENDIAN), y)
+KBUILD_CPPFLAGS	+= -mbig-endian
+AS		+= -EB
+LD		+= -EB
+else
 KBUILD_CPPFLAGS	+= -mlittle-endian
 AS		+= -EL
 LD		+= -EL
-
-comma = ,
+endif
 
 CHECKFLAGS	+= -D__aarch64__
 
@@ -32,14 +37,21 @@ CHECKFLAGS	+= -D__aarch64__
 head-y		:= arch/arm64/kernel/head.o
 
 # The byte offset of the kernel image in RAM from the start of RAM.
+ifeq ($(CONFIG_ARM64_RANDOMIZE_TEXT_OFFSET), y)
+TEXT_OFFSET := $(shell awk 'BEGIN {srand(); printf "0x%03x000\n", int(512 * rand())}')
+else
 TEXT_OFFSET := 0x00080000
-
+endif
 export	TEXT_OFFSET GZFLAGS
 
 core-y		+= arch/arm64/kernel/ arch/arm64/mm/
+core-$(CONFIG_NET) += arch/arm64/net/
+core-$(CONFIG_KVM) += arch/arm64/kvm/
+core-$(CONFIG_XEN) += arch/arm64/xen/
 core-$(CONFIG_CRYPTO) += arch/arm64/crypto/
 libs-y		:= arch/arm64/lib/ $(libs-y)
 libs-y		+= $(LIBGCC)
+libs-$(CONFIG_EFI_STUB) += drivers/firmware/efi/libstub/
 
 # Default target when executing plain make
 ifeq ($(CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE),y)
@@ -50,13 +62,14 @@ endif
 
 KBUILD_DTBS	:= dtbs
 
+all:	$(KBUILD_IMAGE) $(KBUILD_DTBS)
+
 MTK_PLATFORM := $(CONFIG_MTK_PLATFORM:"%"=%)
 MTK_PROJECT := $(CONFIG_ARCH_MTK_PROJECT:"%"=%)
 export MTK_PLATFORM MTK_PROJECT MTK_TARGET_PROJECT
-
-all:	$(KBUILD_IMAGE) $(KBUILD_DTBS)
-
 -include $(srctree)/scripts/drvgen/drvgen.mk
+archprepare: $(DRVGEN_FILE_LIST)
+dtbs: $(DRVGEN_FILE_LIST)
 
 boot := arch/arm64/boot
 
@@ -74,6 +87,10 @@ dtbs: scripts
 
 Image.gz-dtb: vmlinux scripts dtbs
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
+
+PHONY += vdso_install
+vdso_install:
+	$(Q)$(MAKE) $(build)=arch/arm64/kernel/vdso $@
 
 # We use MRPROPER_FILES and CLEAN_FILES now
 archclean:

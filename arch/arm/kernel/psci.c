@@ -23,8 +23,6 @@
 
 #include <asm/compiler.h>
 #include <asm/errno.h>
-#include <asm/opcodes-sec.h>
-#include <asm/opcodes-virt.h>
 #include <asm/psci.h>
 #include <asm/system_misc.h>
 
@@ -32,6 +30,9 @@ struct psci_operations psci_ops;
 
 static int (*invoke_psci_fn)(u32, u32, u32, u32);
 typedef int (*psci_initcall_t)(const struct device_node *);
+
+asmlinkage int __invoke_psci_fn_hvc(u32, u32, u32, u32);
+asmlinkage int __invoke_psci_fn_smc(u32, u32, u32, u32);
 
 enum psci_function {
 	PSCI_FN_CPU_SUSPEND,
@@ -70,47 +71,6 @@ static u32 psci_power_state_pack(struct psci_power_state state)
 		((state.affinity_level << PSCI_0_2_POWER_STATE_AFFL_SHIFT)
 		 & PSCI_0_2_POWER_STATE_AFFL_MASK);
 }
-
-/*
- * The following two functions are invoked via the invoke_psci_fn pointer
- * and will not be inlined, allowing us to piggyback on the AAPCS.
- */
-static noinline int __invoke_psci_fn_hvc(u32 function_id, u32 arg0, u32 arg1,
-					 u32 arg2)
-{
-	asm volatile(
-			__asmeq("%0", "r0")
-			__asmeq("%1", "r1")
-			__asmeq("%2", "r2")
-			__asmeq("%3", "r3")
-			__HVC(0)
-		: "+r" (function_id)
-		: "r" (arg0), "r" (arg1), "r" (arg2));
-
-	return function_id;
-}
-
-static noinline int __invoke_psci_fn_smc(u32 function_id, u32 arg0, u32 arg1,
-					 u32 arg2)
-{
-	asm volatile(
-			__asmeq("%0", "r0")
-			__asmeq("%1", "r1")
-			__asmeq("%2", "r2")
-			__asmeq("%3", "r3")
-			__SMC(0)
-		: "+r" (function_id)
-		: "r" (arg0), "r" (arg1), "r" (arg2));
-
-	return function_id;
-}
-
-#define PSCI_VER_MAJOR_MASK		0xffff0000
-#define PSCI_VER_MINOR_MASK		0x0000ffff
-#define PSCI_VER_MAJOR_SHIFT	16
-#define PSCI_VER_MAJOR(ver)		\
-	((ver & PSCI_VER_MAJOR_MASK) >> PSCI_VER_MAJOR_SHIFT)
-#define PSCI_VER_MINOR(ver)		(ver & PSCI_VER_MINOR_MASK)
 
 static int psci_get_version(void)
 {
@@ -269,10 +229,9 @@ static int psci_0_2_init(struct device_node *np)
 		PSCI_0_2_FN_MIGRATE_INFO_TYPE;
 	psci_ops.migrate_info_type = psci_migrate_info_type;
 
-	//TODO: verify how arm_pm_restart and pm_power_off works with atf
-	//arm_pm_restart = psci_sys_reset;
+	arm_pm_restart = psci_sys_reset;
 
-	//pm_power_off = psci_sys_poweroff;
+	pm_power_off = psci_sys_poweroff;
 
 out_put_node:
 	of_node_put(np);

@@ -1,45 +1,65 @@
 config ARM64
 	def_bool y
+	select ARCH_BINFMT_ELF_RANDOMIZE_PIE
 	select ARCH_HAS_ATOMIC64_DEC_IF_POSITIVE
+	select ARCH_HAS_SG_CHAIN
+	select ARCH_HAS_TICK_BROADCAST if GENERIC_CLOCKEVENTS_BROADCAST
+	select ARCH_USE_CMPXCHG_LOCKREF
 	select ARCH_SUPPORTS_ATOMIC_RMW
 	select ARCH_WANT_OPTIONAL_GPIOLIB
 	select ARCH_WANT_COMPAT_IPC_PARSE_VERSION
-	select ARM_HAS_SG_CHAIN
 	select ARCH_WANT_FRAME_POINTERS
 	select ARM_AMBA
 	select ARM_ARCH_TIMER
+	select ARM_GIC
 	select AUDIT_ARCH_COMPAT_GENERIC
+	select ARM_GIC_V3
+	select BUILDTIME_EXTABLE_SORT
 	select CLONE_BACKWARDS
 	select COMMON_CLK
-        select ARM_GIC
+	select CPU_PM if (SUSPEND || CPU_IDLE)
+	select DCACHE_WORD_ACCESS
+	select GENERIC_ALLOCATOR
 	select GENERIC_CLOCKEVENTS
 	select GENERIC_CLOCKEVENTS_BROADCAST if SMP
 	select GENERIC_CPU_AUTOPROBE
+	select GENERIC_EARLY_IOREMAP
 	select GENERIC_IOMAP
 	select GENERIC_IRQ_PROBE
 	select GENERIC_IRQ_SHOW
+	select GENERIC_SCHED_CLOCK
 	select GENERIC_SMP_IDLE_THREAD
+	select GENERIC_STRNCPY_FROM_USER
+	select GENERIC_STRNLEN_USER
 	select GENERIC_TIME_VSYSCALL
+	select HANDLE_DOMAIN_IRQ
 	select HARDIRQS_SW_RESEND
-	select HAVE_ARCH_JUMP_LABEL
 	select HAVE_ARCH_AUDITSYSCALL
-	select HAVE_ARCH_SECCOMP_FILTER
+	select HAVE_ARCH_JUMP_LABEL
 	select HAVE_ARCH_KGDB
+	select HAVE_ARCH_SECCOMP_FILTER
 	select HAVE_ARCH_TRACEHOOK
+	select HAVE_BPF_JIT
 	select HAVE_C_RECORDMCOUNT
+	select HAVE_CC_STACKPROTECTOR
 	select HAVE_DEBUG_BUGVERBOSE
 	select HAVE_DEBUG_KMEMLEAK
 	select HAVE_DMA_API_DEBUG
 	select HAVE_DMA_ATTRS
+	select HAVE_DMA_CONTIGUOUS
 	select HAVE_DYNAMIC_FTRACE
+	select HAVE_EFFICIENT_UNALIGNED_ACCESS
 	select HAVE_FTRACE_MCOUNT_RECORD
 	select HAVE_FUNCTION_TRACER
 	select HAVE_FUNCTION_GRAPH_TRACER
 	select HAVE_GENERIC_DMA_COHERENT
-	select HAVE_GENERIC_HARDIRQS
 	select HAVE_HW_BREAKPOINT if PERF_EVENTS
 	select HAVE_MEMBLOCK
+	select HAVE_PATA_PLATFORM
 	select HAVE_PERF_EVENTS
+	select HAVE_PERF_REGS
+	select HAVE_PERF_USER_STACK_DUMP
+	select HAVE_RCU_TABLE_FREE
 	select HAVE_SYSCALL_TRACEPOINTS
 	select IRQ_DOMAIN
 	select MODULES_USE_ELF_RELA
@@ -53,11 +73,10 @@ config ARM64
 	select RTC_LIB
 	select SPARSE_IRQ
 	select SYSCTL_EXCEPTION_TRACE
+	select HAVE_CONTEXT_TRACKING
+	select DT_IDLE_STATES
 	help
 	  ARM 64-bit (AArch64) Linux support.
-
-config ARM_HAS_SG_CHAIN
-	def_bool y
 
 config 64BIT
 	def_bool y
@@ -68,8 +87,12 @@ config ARCH_PHYS_ADDR_T_64BIT
 config MMU
 	def_bool y
 
-config NO_IOPORT
-	def_bool y
+config NO_IOPORT_MAP
+	def_bool y if !PCI
+
+config ILLEGAL_POINTER_VALUE
+	hex
+	default 0xdead000000000000
 
 config STACKTRACE_SUPPORT
 	def_bool y
@@ -80,30 +103,22 @@ config LOCKDEP_SUPPORT
 config TRACE_IRQFLAGS_SUPPORT
 	def_bool y
 
-config GENERIC_LOCKBREAK
+config RWSEM_XCHGADD_ALGORITHM
 	def_bool y
-	depends on SMP && PREEMPT
-
-config RWSEM_GENERIC_SPINLOCK
-	def_bool y
-
-config ARCH_HAS_CPUFREQ
-	bool
-	help
-	  Internal node to signify that the ARCH has CPUFREQ support
-	  and that the relevant menu configurations are displayed for
-	  it.
 
 config GENERIC_HWEIGHT
 	def_bool y
 
 config GENERIC_CSUM
-        def_bool y
+	def_bool y
 
 config GENERIC_CALIBRATE_DELAY
 	def_bool y
 
 config ZONE_DMA
+	def_bool y
+
+config HAVE_GENERIC_RCU_GUP
 	def_bool y
 
 config ARCH_DMA_ADDR_T_64BIT
@@ -121,26 +136,63 @@ config SWIOTLB
 config IOMMU_HELPER
 	def_bool SWIOTLB
 
-config ARM_ERRATA_824069
-	bool "ARM errata: Cache line might not be marked as clean after a CleanShared snoop"
-	depends on SMP
-	help
-	  This option enables the workaround for erratum 824069
-	  affecting Cortex-A53 MPCore with two or more processors (r0p0..r0p2).
-	  If a Cortex-A53 processor is executing a store or PLDW instruction at the same time
-	  as a processor in another cluster is executing a cache maintenance operation
-	  to the same address, then this erratum might cause a clean cache line to be
-	  incorrectly marked as dirty. This workaround replaces all cache clean opeartion
-	  to clean & invalidate.
-
 config KERNEL_MODE_NEON
 	def_bool y
+
+config FIX_EARLYCON_MEM
+	def_bool y
+
+config ARM64_ERRATUM_836870
+	bool "Cortex-A53: 836870: Non-allocating reads might prevent a store exclusive from passing"
+	depends on ARM64
+	help
+	  This option enables the workaround for erratum 836870
+	  affecting Cortex-A53 MPCore with two or more processors (r0p0..r0p3).
+	  If a Cortex-A53 processor is executing a load and store exclusive instruction in a loop then there are certain conditions
+	  that are allowed to cause the store exclusive instruction to repeatedly fail. This includes another processor repeatedly
+	  writing to the same cache line. In addition to these allowed conditions, a non-allocating load from another processor migh
+	  also cause the store exclusive instruction to repeatedly fail.
+
+	  This walkaournd is to ensure system do not use non-allocating load. For 32 bit ATF and 64 bit project,
+	  master cpu's DTAH bit is set to 1 at preloader stage and set to 1 again after suspend through
+	  dormant driver in ATF. Slave cpus's DTAH bit is set to 1 at dormant driver in ATF stage.
+	  For 32 bit non-ATF project, Master cpu's DTAH bit is set to 1 at preloader stage and
+	  set to 1 again after suspend through dormant driver in kernel. Slave cpus's DTAH bit is set to 1
+	  by hotplug driver in kernel.
+
+	  In 64 bit project, this Kernel config do nothing since all patches are in ATF and preloader. and
+	  ATF and preloader are already default enable these patches.
+
+
+config ARM64_ERRATUM_845719
+	bool "Cortex-A53: 845719: a load might read incorrect data"
+	depends on COMPAT
+	default y
+	help
+	  This option enables the workaround for erratum 845719.
+	  When running a compat (AArch32) userspace on an affected Cortex-A53
+	  part, a load at EL0 from a virtual address that matches the bottom 32
+	  bits of the virtual address used by a recent load at (AArch64) EL1
+	  might return incorrect data.
+
+	  The workaround is to write the contextidr_el1 register on exception
+	  return to a 32-bit task.
+	  Please note that this does not necessarily enable the workaround,
+	  as it depends on the alternative framework, which will only patch
+	  the kernel if an affected CPU is detected.
+
+	  If unsure, say Y.
 
 source "init/Kconfig"
 
 source "kernel/Kconfig.freezer"
 
 menu "Platform selection"
+
+config ARCH_THUNDER
+	bool "Cavium Inc. Thunder SoC Family"
+	help
+	  This enables support for Cavium's Thunder Family of SoCs.
 
 config ARCH_VEXPRESS
 	bool "ARMv8 software model (Versatile Express)"
@@ -151,6 +203,24 @@ config ARCH_VEXPRESS
 	help
 	  This enables support for the ARMv8 software model (Versatile
 	  Express).
+
+config ARCH_MEDIATEK
+	bool
+	select GENERIC_TIME
+	select GENERIC_CLOCKEVENTS
+	select ARCH_HAS_CPUFREQ
+	select ARM_AMBA
+	select CPU_V7
+	select HAVE_SMP
+	select NEED_MACH_MEMORY_H
+	select IRQ_DOMAIN
+	select IRQ_DOMAIN_DEBUG
+	select GENERIC_SCHED_CLOCK
+	select ARMV7_COMPAT
+	select ARMV7_COMPAT_CPUINFO
+	select CPU_IDLE
+	select PINCTRL
+	select MFD_SYSCON
 
 config ARCH_MT6735
 	bool "MediaTek MT6735"
@@ -165,10 +235,146 @@ config ARCH_MT6735
 	select IRQ_DOMAIN_DEBUG
 	select GENERIC_SCHED_CLOCK
 	select MTK_SYSTRACKER
+	select MTK_SYS_CIRQ
+	select MTK_EIC
 	select ARMV7_COMPAT
-        select ARMV7_COMPAT_CPUINFO
+	select ARMV7_COMPAT_CPUINFO
+	select CPU_IDLE
+	select PINCTRL
+	select PINCTRL_MT6735
+	select MFD_SYSCON
+	select MTK_BASE_POWER
+	select MTK_GIC
+	select ARM64_ERRATUM_845719
+	select ARM64_ERRATUM_836870
+	select MTK_IRQ_NEW_DESIGN
+	select MTK_IRQ_NEW_DESIGN_DEBUG
+	select MTK_POWER_GS
+	select MTK_CPU_STRESS
 	help
 	  This enable support for MediaTek MT6735
+
+config ARCH_MT6753
+	bool "MediaTek MT6753"
+	select GENERIC_TIME
+	select GENERIC_CLOCKEVENTS
+	select ARCH_HAS_CPUFREQ
+	select ARM_AMBA
+	select CPU_V7
+	select HAVE_SMP
+	select NEED_MACH_MEMORY_H
+	select IRQ_DOMAIN
+	select IRQ_DOMAIN_DEBUG
+	select GENERIC_SCHED_CLOCK
+	select MTK_SYSTRACKER
+	select MTK_SYS_CIRQ
+	select MTK_EIC
+	select MTK_GIC
+	select ARMV7_COMPAT
+	select ARMV7_COMPAT_CPUINFO
+	select CPU_IDLE
+	select ARM_MT6735_CPUIDLE
+	select MTK_BASE_POWER
+	select PINCTRL
+	select PINCTRL_MT6735
+	select MFD_SYSCON
+	select ARM64_ERRATUM_845719
+	select ARM64_ERRATUM_836870
+	select MTK_POWER_GS
+	select MTK_CPU_STRESS
+	help
+	  This enable support for MediaTek MT6753
+	  To enable related drivers
+	  support for k53v1_64 related project
+	  support for k53v1_64_op02 project
+
+config ARCH_MT6755
+	bool "MediaTek MT6755"
+	select GENERIC_TIME
+	select GENERIC_CLOCKEVENTS
+	select ARCH_HAS_CPUFREQ
+	select ARM_AMBA
+	select CPU_V7
+	select HAVE_SMP
+	select NEED_MACH_MEMORY_H
+	select IRQ_DOMAIN
+	select IRQ_DOMAIN_DEBUG
+	select GENERIC_SCHED_CLOCK
+	select MTK_SYS_CIRQ
+	select MTK_EIC
+	select ARMV7_COMPAT
+	select ARMV7_COMPAT_CPUINFO
+	select CPU_IDLE
+	select PINCTRL
+	select PINCTRL_MT6755
+	select MFD_SYSCON
+	select MTK_BASE_POWER
+	select MTK_GIC
+	select ARM64_ERRATUM_845719
+	select ARM64_ERRATUM_836870
+	select MTK_POWER_GS
+	select MTK_SYSTRACKER_V2
+	select MTK_LM_MODE
+	help
+	  This enables support for MediaTek MT6755
+	  Support for aarch64/aarch32 Architecture
+	  Support for evb6755 related projects
+	  Support for k55 related projects
+
+config ARCH_MT6797
+	bool "MediaTek MT6797"
+	select GENERIC_TIME
+	select GENERIC_CLOCKEVENTS
+	select ARCH_HAS_CPUFREQ
+	select ARM_AMBA
+	select CPU_V7
+	select HAVE_SMP
+	select NEED_MACH_MEMORY_H
+	select IRQ_DOMAIN
+	select IRQ_DOMAIN_DEBUG
+	select GENERIC_SCHED_CLOCK
+	select MTK_SYS_CIRQ
+	select MTK_EIC
+	select ARMV7_COMPAT
+	select ARMV7_COMPAT_CPUINFO
+	select CPU_IDLE
+	select PINCTRL
+	select PINCTRL_MT6797
+	select MFD_SYSCON
+	select MTK_BASE_POWER
+	select MTK_POWER_GS
+	select MTK_SYSTRACKER_V2
+	select MTK_GIC_V3_EXT
+	help
+	  This enables support for MediaTek MT6797
+	  Support for aarch64/aarch32 Architecture
+	  Support for fpga6797_64 related projects
+	  Support for evb6797_64 related projects
+	  Support for k97_64 related projects
+
+config ARCH_MT8163
+	bool "MediaTek MT8163"
+	select ARCH_MEDIATEK
+	select MTK_BASE_POWER
+	select MTK_SYS_CIRQ
+	select MTK_GIC_EXT
+	help
+	  This enable support for MediaTek MT8163. If you need support
+	  for MediaTek MT8163, say Y here.
+	  Please note this also select ARCH_MEDIATEK, so driver depends
+	  on it can be selected.
+
+config ARCH_MT8173
+	bool "MediaTek MT8173"
+	select ARCH_MEDIATEK
+	select MTK_BASE_POWER
+	select MTK_SYS_CIRQ
+	select MTK_GIC_EXT
+	help
+	  This enable support for MediaTek MT8173. If you need support
+	  for MediaTek MT8173, say Y here.
+	  Please note this also select ARCH_MEDIATEK, so driver depends
+	  on it can be selected.
 
 config ARCH_MT6735M
 	bool "MediaTek MT6735M"
@@ -183,76 +389,32 @@ config ARCH_MT6735M
 	select IRQ_DOMAIN_DEBUG
 	select GENERIC_SCHED_CLOCK
 	select MTK_SYSTRACKER
-	select ARMV7_COMPAT
-        select ARMV7_COMPAT_CPUINFO
-	help
-	  This enable support for MediaTek MT6735M
-
-config ARCH_MT6753
-	bool "MediaTek MT6735M"
-	select GENERIC_TIME
-	select GENERIC_CLOCKEVENTS
-	select ARCH_HAS_CPUFREQ
-	select ARM_AMBA
-	select CPU_V7
-	select HAVE_SMP
-	select NEED_MACH_MEMORY_H
-	select IRQ_DOMAIN
-	select IRQ_DOMAIN_DEBUG
-	select GENERIC_SCHED_CLOCK
-	select MTK_SYSTRACKER
-	select ARMV7_COMPAT
-        select ARMV7_COMPAT_CPUINFO
-	help
-	  This enable support for MediaTek MT6753
-
-config ARCH_MT6752
-	bool "MediaTek MT6752"
-	select GENERIC_TIME
-	select GENERIC_CLOCKEVENTS
-	select ARCH_HAS_CPUFREQ
-	select ARM_AMBA
-	select CPU_V7
-	select HAVE_SMP
-	select NEED_MACH_MEMORY_H
-	select IRQ_DOMAIN
-	select IRQ_DOMAIN_DEBUG
-	select GENERIC_SCHED_CLOCK
-	select MTK_SYSTRACKER
-	select MTK_L2C_SHARE
-	select ARCH_REQUIRE_GPIOLIB
-	select MTK_ETM
+	select MTK_SYS_CIRQ
 	select MTK_EIC
 	select ARMV7_COMPAT
-        select ARMV7_COMPAT_CPUINFO
-	select ARM_ERRATA_824069
-	help
-	  This enable support for MediaTek MT6752
-
-config ARCH_MT6795
-	bool "MediaTek MT6795"
-	select GENERIC_TIME
-	select GENERIC_CLOCKEVENTS
-	select ARCH_HAS_CPUFREQ
-	select ARM_AMBA
-	select CPU_V7
-	select HAVE_SMP
-	select NEED_MACH_MEMORY_H
-	select FIQ_GLUE
-	select IRQ_DOMAIN
-	select IRQ_DOMAIN_DEBUG
-	select GENERIC_SCHED_CLOCK
-	select ARCH_REQUIRE_GPIOLIB
-	select MTK_CIRQ
+	select ARMV7_COMPAT_CPUINFO
+	select CPU_IDLE
+	select ARM_MT6735_CPUIDLE
+	select MTK_GIC
+	select MTK_IRQ_NEW_DESIGN
+	select MTK_IRQ_NEW_DESIGN_DEBUG
+	select PINCTRL
+	select PINCTRL_MT6735
+	select MFD_SYSCON
+	select MTK_BASE_POWER
+	select MTK_POWER_GS
 	select MTK_CPU_STRESS
-	select MTK_SYSTRACKER
-	select MTK_LASTPC
-	select ARMV7_COMPAT
-        select ARMV7_COMPAT_CPUINFO
-        select MD32_SUPPORT
-	select ARM_ERRATA_824069
 	help
-	  This enable support for MediaTek MT6795
+	  This enable support for MediaTek MT6735M
+	  Support for k35mv1_64
+	  Support for k35mv1_64_op01
+	  Support for k35mv1_64_op02
+
+config ARCH_XGENE
+	bool "AppliedMicro X-Gene SOC Family"
+	help
+	  This enables support for AppliedMicro X-Gene SOC Family
+
 endmenu
 
 source "drivers/misc/mediatek/mach/Kconfig"
@@ -262,21 +424,223 @@ menu "Bus support"
 config ARM_AMBA
 	bool
 
+config PCI
+	bool "PCI support"
+	help
+	  This feature enables support for PCI bus system. If you say Y
+	  here, the kernel will include drivers and infrastructure code
+	  to support PCI bus devices.
+
+config PCI_DOMAINS
+	def_bool PCI
+
+config PCI_DOMAINS_GENERIC
+	def_bool PCI
+
+config PCI_SYSCALL
+	def_bool PCI
+
+source "drivers/pci/Kconfig"
+source "drivers/pci/pcie/Kconfig"
+source "drivers/pci/hotplug/Kconfig"
+
 endmenu
 
 menu "Kernel Features"
 
+menu "ARM errata workarounds via the alternatives framework"
+
+config ARM64_ERRATUM_826319
+	bool "Cortex-A53: 826319: System might deadlock if a write cannot complete until read data is accepted"
+	default y
+	help
+	  This option adds an alternative code sequence to work around ARM
+	  erratum 826319 on Cortex-A53 parts up to r0p2 with an AMBA 4 ACE or
+	  AXI master interface and an L2 cache.
+
+	  If a Cortex-A53 uses an AMBA AXI4 ACE interface to other processors
+	  and is unable to accept a certain write via this interface, it will
+	  not progress on read data presented on the read data channel and the
+	  system can deadlock.
+
+	  The workaround promotes data cache clean instructions to
+	  data cache clean-and-invalidate.
+	  Please note that this does not necessarily enable the workaround,
+	  as it depends on the alternative framework, which will only patch
+	  the kernel if an affected CPU is detected.
+
+	  If unsure, say Y.
+
+config ARM64_ERRATUM_827319
+	bool "Cortex-A53: 827319: Data cache clean instructions might cause overlapping transactions to the interconnect"
+	default y
+	help
+	  This option adds an alternative code sequence to work around ARM
+	  erratum 827319 on Cortex-A53 parts up to r0p2 with an AMBA 5 CHI
+	  master interface and an L2 cache.
+
+	  Under certain conditions this erratum can cause a clean line eviction
+	  to occur at the same time as another transaction to the same address
+	  on the AMBA 5 CHI interface, which can cause data corruption if the
+	  interconnect reorders the two transactions.
+
+	  The workaround promotes data cache clean instructions to
+	  data cache clean-and-invalidate.
+	  Please note that this does not necessarily enable the workaround,
+	  as it depends on the alternative framework, which will only patch
+	  the kernel if an affected CPU is detected.
+
+	  If unsure, say Y.
+
+config ARM64_ERRATUM_824069
+	bool "Cortex-A53: 824069: Cache line might not be marked as clean after a CleanShared snoop"
+	default y
+	help
+	  This option adds an alternative code sequence to work around ARM
+	  erratum 824069 on Cortex-A53 parts up to r0p2 when it is connected
+	  to a coherent interconnect.
+
+	  If a Cortex-A53 processor is executing a store or prefetch for
+	  write instruction at the same time as a processor in another
+	  cluster is executing a cache maintenance operation to the same
+	  address, then this erratum might cause a clean cache line to be
+	  incorrectly marked as dirty.
+
+	  The workaround promotes data cache clean instructions to
+	  data cache clean-and-invalidate.
+	  Please note that this option does not necessarily enable the
+	  workaround, as it depends on the alternative framework, which will
+	  only patch the kernel if an affected CPU is detected.
+
+	  If unsure, say Y.
+
+config ARM64_ERRATUM_819472
+	bool "Cortex-A53: 819472: Store exclusive instructions might cause data corruption"
+	default y
+	help
+	  This option adds an alternative code sequence to work around ARM
+	  erratum 819472 on Cortex-A53 parts up to r0p1 with an L2 cache
+	  present when it is connected to a coherent interconnect.
+
+	  If the processor is executing a load and store exclusive sequence at
+	  the same time as a processor in another cluster is executing a cache
+	  maintenance operation to the same address, then this erratum might
+	  cause data corruption.
+
+	  The workaround promotes data cache clean instructions to
+	  data cache clean-and-invalidate.
+	  Please note that this does not necessarily enable the workaround,
+	  as it depends on the alternative framework, which will only patch
+	  the kernel if an affected CPU is detected.
+
+	  If unsure, say Y.
+
+config ARM64_ERRATUM_832075
+	bool "Cortex-A57: 832075: possible deadlock on mixing exclusive memory accesses with device loads"
+	default y
+	help
+	  This option adds an alternative code sequence to work around ARM
+	  erratum 832075 on Cortex-A57 parts up to r1p2.
+
+	  Affected Cortex-A57 parts might deadlock when exclusive load/store
+	  instructions to Write-Back memory are mixed with Device loads.
+
+	  The workaround is to promote device loads to use Load-Acquire
+	  semantics.
+	  Please note that this does not necessarily enable the workaround,
+	  as it depends on the alternative framework, which will only patch
+	  the kernel if an affected CPU is detected.
+
+	  If unsure, say Y.
+
+config ARM64_ERRATUM_845719
+	bool "Cortex-A53: 845719: a load might read incorrect data"
+	depends on COMPAT
+	default y
+	help
+	  This option adds an alternative code sequence to work around ARM
+	  erratum 845719 on Cortex-A53 parts up to r0p4.
+
+	  When running a compat (AArch32) userspace on an affected Cortex-A53
+	  part, a load at EL0 from a virtual address that matches the bottom 32
+	  bits of the virtual address used by a recent load at (AArch64) EL1
+	  might return incorrect data.
+
+	  The workaround is to write the contextidr_el1 register on exception
+	  return to a 32-bit task.
+	  Please note that this does not necessarily enable the workaround,
+	  as it depends on the alternative framework, which will only patch
+	  the kernel if an affected CPU is detected.
+
+	  If unsure, say Y.
+
+endmenu
+
+
+choice
+	prompt "Page size"
+	default ARM64_4K_PAGES
+	help
+	  Page size (translation granule) configuration.
+
+config ARM64_4K_PAGES
+	bool "4KB"
+	help
+	  This feature enables 4KB pages support.
+
 config ARM64_64K_PAGES
-	bool "Enable 64KB pages support"
+	bool "64KB"
 	help
 	  This feature enables 64KB pages support (4KB by default)
 	  allowing only two levels of page tables and faster TLB
 	  look-up. AArch32 emulation is not available when this feature
 	  is enabled.
 
+endchoice
+
+choice
+	prompt "Virtual address space size"
+	default ARM64_VA_BITS_39 if ARM64_4K_PAGES
+	default ARM64_VA_BITS_42 if ARM64_64K_PAGES
+	help
+	  Allows choosing one of multiple possible virtual address
+	  space sizes. The level of translation table is determined by
+	  a combination of page size and virtual address space size.
+
+config ARM64_VA_BITS_39
+	bool "39-bit"
+	depends on ARM64_4K_PAGES
+
+config ARM64_VA_BITS_42
+	bool "42-bit"
+	depends on ARM64_64K_PAGES
+
+config ARM64_VA_BITS_48
+	bool "48-bit"
+	depends on !ARM_SMMU
+
+endchoice
+
+config ARM64_VA_BITS
+	int
+	default 39 if ARM64_VA_BITS_39
+	default 42 if ARM64_VA_BITS_42
+	default 48 if ARM64_VA_BITS_48
+
+config ARM64_PGTABLE_LEVELS
+	int
+	default 2 if ARM64_64K_PAGES && ARM64_VA_BITS_42
+	default 3 if ARM64_64K_PAGES && ARM64_VA_BITS_48
+	default 3 if ARM64_4K_PAGES && ARM64_VA_BITS_39
+	default 4 if ARM64_4K_PAGES && ARM64_VA_BITS_48
+
+config CPU_BIG_ENDIAN
+	bool "Build big-endian kernel"
+	help
+	  Say Y if you plan on running a kernel in big-endian mode.
+
 config SMP
 	bool "Symmetric Multi-Processing"
-	select USE_GENERIC_SMP_HELPERS
 	help
 	  This enables support for systems with more than one CPU.  If
 	  you say N here, the kernel will run on single and
@@ -288,17 +652,9 @@ config SMP
 
 	  If you don't know what to do here, say N.
 
-config ARM_CPU_TOPOLOGY
-	bool "Support CPU topology definition"
-	depends on SMP
-	default y
-	help
-	  Support CPU topology definition, based on configuration
-	  provided by the firmware.
-
 config SCHED_MC
 	bool "Multi-core scheduler support"
-	depends on ARM_CPU_TOPOLOGY
+	depends on SMP
 	help
 	  Multi-core scheduler support improves the CPU scheduler's decision
 	  making when dealing with multi-core CPU chips at a cost of slightly
@@ -306,214 +662,18 @@ config SCHED_MC
 
 config SCHED_SMT
 	bool "SMT scheduler support"
-	depends on ARM_CPU_TOPOLOGY
+	depends on SMP
 	help
 	  Improves the CPU scheduler's decision making when dealing with
 	  MultiThreading at a cost of slightly increased overhead in some
 	  places. If unsure say N here.
 
-config DISABLE_CPU_SCHED_DOMAIN_BALANCE
-	bool "(EXPERIMENTAL) Disable CPU level scheduler load-balancing"
-	help
-	  Disables scheduler load-balancing at CPU sched domain level.
-
-config SCHED_HMP
-	bool "(EXPERIMENTAL) Heterogenous multiprocessor scheduling"
-	depends on DISABLE_CPU_SCHED_DOMAIN_BALANCE && SCHED_MC && FAIR_GROUP_SCHED && !SCHED_AUTOGROUP
-	help
-	  Experimental scheduler optimizations for heterogeneous platforms.
-	  Attempts to introspectively select task affinity to optimize power
-	  and performance. Basic support for multiple (>2) cpu types is in place,
-	  but it has only been tested with two types of cpus.
-	  There is currently no support for migration of task groups, hence
-	  !SCHED_AUTOGROUP. Furthermore, normal load-balancing must be disabled
-	  between cpus of different type (DISABLE_CPU_SCHED_DOMAIN_BALANCE).
-
-config SCHED_HMP_PRIO_FILTER
-	bool "(EXPERIMENTAL) Filter HMP migrations by task priority"
-	depends on SCHED_HMP
-	help
-	  Enables task priority based HMP migration filter. Any task with
-	  a NICE value above the threshold will always be on low-power cpus
-	  with less compute capacity.
-
-config SCHED_HMP_PRIO_FILTER_VAL
-	int "NICE priority threshold"
-	default 5
-	depends on SCHED_HMP_PRIO_FILTER
-
-config HMP_FAST_CPU_MASK
-	string "HMP scheduler fast CPU mask"
-	depends on SCHED_HMP
-	help
-          Leave empty to use device tree information.
-	  Specify the cpuids of the fast CPUs in the system as a list string,
-	  e.g. cpuid 0+1 should be specified as 0-1.
-
-config HMP_SLOW_CPU_MASK
-	string "HMP scheduler slow CPU mask"
-	depends on SCHED_HMP
-	help
-	  Leave empty to use device tree information.
-	  Specify the cpuids of the slow CPUs in the system as a list string,
-	  e.g. cpuid 0+1 should be specified as 0-1.
-
-config HMP_VARIABLE_SCALE
-	bool "Allows changing the load tracking scale through sysfs"
-	depends on SCHED_HMP
-	help
-	  When turned on, this option exports the thresholds and load average
-	  period value for the load tracking patches through sysfs.
-	  The values can be modified to change the rate of load accumulation
-	  and the thresholds used for HMP migration.
-	  The load_avg_period_ms is the time in ms to reach a load average of
-	  0.5 for an idle task of 0 load average ratio that start a busy loop.
-	  The up_threshold and down_threshold is the value to go to a faster
-	  CPU or to go back to a slower cpu.
-	  The {up,down}_threshold are devided by 1024 before being compared
-	  to the load average.
-	  For examples, with load_avg_period_ms = 128 and up_threshold = 512,
-	  a running task with a load of 0 will be migrated to a bigger CPU after
-	  128ms, because after 128ms its load_avg_ratio is 0.5 and the real
-	  up_threshold is 0.5.
-	  This patch has the same behavior as changing the Y of the load
-	  average computation to
-	        (1002/1024)^(LOAD_AVG_PERIOD/load_avg_period_ms)
-	  but it remove intermadiate overflows in computation.
-
-config MET_SCHED_HMP
-	bool "(EXPERIMENTAL) MET SCHED HMP Info"
-	depends on SCHED_HMP_ENHANCEMENT
-	depends on HMP_TRACER
-	help
-	  MET SCHED HMP Info
-
-config HMP_FREQUENCY_INVARIANT_SCALE
-	bool "(EXPERIMENTAL) Frequency-Invariant Tracked Load for HMP"
-	depends on HMP_VARIABLE_SCALE && CPU_FREQ
-	depends on !ARCH_SCALE_INVARIANT_CPU_CAPACITY
-	help
-	  Scales the current load contribution in line with the frequency
-	  of the CPU that the task was executed on.
-	  In this version, we use a simple linear scale derived from the
-	  maximum frequency reported by CPUFreq.
-	  Restricting tracked load to be scaled by the CPU's frequency
-	  represents the consumption of possible compute capacity
-	  (rather than consumption of actual instantaneous capacity as
-	  normal) and allows the HMP migration's simple threshold
-	  migration strategy to interact more predictably with CPUFreq's
-	  asynchronous compute capacity changes.
-
-config SCHED_HMP_ENHANCEMENT
-	bool "(EXPERIMENTAL) HMP Ennhancement"
-	depends on SCHED_HMP
-	help
-	  HMP Ennhancement
-
-config HMP_TRACER
-	bool "(EXPERIMENTAL) Profile HMP scheduler"
-	depends on SCHED_HMP_ENHANCEMENT
-	help
-	  Profile HMP scheduler
-
-config HMP_DYNAMIC_THRESHOLD
-	bool "(EXPERIMENTAL) Dynamically adjust task migration threshold"
-	depends on SCHED_HMP_ENHANCEMENT
-	help
-	  Dynamically adjust task migration threshold according to current system load
-
-config HMP_GLOBAL_BALANCE
-	bool "(EXPERIMENTAL) Enhance HMP global load balance"
-	depends on SCHED_HMP_ENHANCEMENT
-	help
-	  Enhance HMP global load balance
-
-config HMP_TASK_ASSIGNMENT
-	bool "(EXPERIMENTAL) Enhance HMP task assignment"
-	depends on SCHED_HMP_ENHANCEMENT
-	help
-	  Enhance HMP task assignment
-
-config HMP_DISCARD_CFS_SELECTION_RESULT
-	bool "(EXPERIMENTAL) Discard CFS runqueue selection result"
-	depends on SCHED_HMP_ENHANCEMENT && HMP_TASK_ASSIGNMENT
-	help
-	  Discard CFS runqueue selection result even if only one cluster exists
-
-config HMP_PACK_SMALL_TASK
-	bool "(EXPERIMENTAL) Packing Small Tasks"
-	depends on SCHED_HMP_ENHANCEMENT
-	help
-		This option enables Packing Small Tasks
-
-config HMP_PACK_BUDDY_INFO
-	bool "(EXPERIMENTAL) Packing Small Tasks Buddy Information Log"
-	depends on SCHED_HMP_ENHANCEMENT && HMP_PACK_SMALL_TASK
-	help
-		This option enables Packing Small Tasks Buddy Information Log
-
-config HMP_LAZY_BALANCE
-	bool "(EXPERIMENTAL) Lazy Balance"
-	depends on SCHED_HMP_ENHANCEMENT && HMP_PACK_SMALL_TASK
-	help
-		This option enables Lazy Balance
-
-config HMP_POWER_AWARE_CONTROLLER
-	bool "(EXPERIMENTAL) Power-aware Scheduler for b.L MP Controller"
-	depends on SCHED_HMP_ENHANCEMENT && HMP_PACK_SMALL_TASK && HMP_LAZY_BALANCE
-	help
-		Power-aware scheduler for b.L MP controller and status interface
-
-config HEVTASK_INTERFACE
-	bool "task status interface"
-	help
-	  The option provide an interface to show task status
-
-config ARCH_SCALE_INVARIANT_CPU_CAPACITY
-	bool "(EXPERIMENTAL) Scale-Invariant CPU Compute Capacity Recording"
-	depends on CPU_FREQ
-	help
-	    Provides a new measure of maximum and instantaneous CPU compute
-	    capacity, derived from a table of relative compute performance
-	    for each core type present in the system. The table is an
-	    estimate and specific core performance may be different for
-	    any particular workload. The measure includes the relative
-	    performance and a linear scale of current to maximum frequency
-	    such that at maximum frequency (as expressed in the DTB) the
-	    reported compute capacity will be equal to the estimated
-	    performance from the table. Values range between 0 and 1023 where
-	    1023 is the highest capacity available in the system.
-
 config NR_CPUS
-	int "Maximum number of CPUs (2-32)"
-	range 2 32
+	int "Maximum number of CPUs (2-64)"
+	range 2 64
 	depends on SMP
-	default "4"
-
-config SWP_EMULATE
-	bool "Emulate SWP/SWPB instructions"
-	help
-	  ARMv6 architecture deprecates use of the SWP/SWPB instructions. ARMv8
-	  oblosetes the use of SWP/SWPB instructions. ARMv7 multiprocessing
-	  extensions introduce the ability to disable these instructions,
-	  triggering an undefined instruction exception when executed. Say Y
-	  here to enable software emulation of these instructions for userspace
-	  (not kernel) using LDREX/STREX. Also creates /proc/cpu/swp_emulation
-	  for statistics.
-
-	  In some older versions of glibc [<=2.8] SWP is used during futex
-	  trylock() operations with the assumption that the code will not
-	  be preempted. This invalid assumption may be more likely to fail
-	  with SWP emulation enabled, leading to deadlock of the user
-	  application.
-
-	  NOTE: when accessing uncached shared regions, LDREX/STREX rely
-	  on an external transaction monitoring block called a global
-	  monitor to maintain update atomicity. If your system does not
-	  implement a global monitor, this option can cause programs that
-	  perform SWP operations to uncached memory to deadlock.
-
-	  If unsure, say Y.
+	# These have to remain sorted largest to smallest
+	default "64"
 
 config HOTPLUG_CPU
 	bool "Support for hot-pluggable CPUs"
@@ -552,26 +712,20 @@ config HW_PERF_EVENTS
 	  Enable hardware performance counter support for perf events. If
 	  disabled, perf events will use software events only.
 
-config ARMV7_COMPAT
-	bool "Kernel support for ARMv7 applications"
-	depends on COMPAT
-	select SWP_EMULATE
-	help
-	 This option enables features that allow that ran on an ARMv7 or older
-	 processor to continue functioning.
+config SYS_SUPPORTS_HUGETLBFS
+	def_bool y
 
-	 If you want to execute ARMv7 applications, say Y
+config ARCH_WANT_GENERAL_HUGETLB
+	def_bool y
 
-config ARMV7_COMPAT_CPUINFO
-	bool "Report backwards compatible cpu features in /proc/cpuinfo"
-	depends on ARMV7_COMPAT
-	default y
-	help
-	 This option makes /proc/cpuinfo list CPU features that an ARMv7 or
-	 earlier kernel would report, but are not optional on an ARMv8 or later
-	 processor.
+config ARCH_WANT_HUGE_PMD_SHARE
+	def_bool y if !ARM64_64K_PAGES
 
-	 If you want to execute ARMv7 applications, say Y
+config HAVE_ARCH_TRANSPARENT_HUGEPAGE
+	def_bool y
+
+config ARCH_HAS_CACHE_LINE_SIZE
+	def_bool y
 
 source "mm/Kconfig"
 
@@ -588,6 +742,89 @@ config SECCOMP
 	  and the task is only allowed to execute a few safe syscalls
 	  defined by each seccomp mode.
 
+config XEN_DOM0
+	def_bool y
+	depends on XEN
+
+config XEN
+	bool "Xen guest support on ARM64"
+	depends on ARM64 && OF
+	select SWIOTLB_XEN
+	help
+	  Say Y if you want to run Linux in a Virtual Machine on Xen on ARM64.
+
+config FORCE_MAX_ZONEORDER
+	int
+	default "14" if (ARM64_64K_PAGES && TRANSPARENT_HUGEPAGE)
+	default "11"
+
+menuconfig ARMV8_DEPRECATED
+	bool "Emulate deprecated/obsolete ARMv8 instructions"
+	depends on COMPAT
+	help
+	  Legacy software support may require certain instructions
+	  that have been deprecated or obsoleted in the architecture.
+
+	  Enable this config to enable selective emulation of these
+	  features.
+
+	  If unsure, say Y
+
+if ARMV8_DEPRECATED
+
+config SWP_EMULATION
+	bool "Emulate SWP/SWPB instructions"
+	help
+	  ARMv8 obsoletes the use of A32 SWP/SWPB instructions such that
+	  they are always undefined. Say Y here to enable software
+	  emulation of these instructions for userspace using LDXR/STXR.
+
+	  In some older versions of glibc [<=2.8] SWP is used during futex
+	  trylock() operations with the assumption that the code will not
+	  be preempted. This invalid assumption may be more likely to fail
+	  with SWP emulation enabled, leading to deadlock of the user
+	  application.
+
+	  NOTE: when accessing uncached shared regions, LDXR/STXR rely
+	  on an external transaction monitoring block called a global
+	  monitor to maintain update atomicity. If your system does not
+	  implement a global monitor, this option can cause programs that
+	  perform SWP operations to uncached memory to deadlock.
+
+	  If unsure, say Y
+
+config CP15_BARRIER_EMULATION
+	bool "Emulate CP15 Barrier instructions"
+	help
+	  The CP15 barrier instructions - CP15ISB, CP15DSB, and
+	  CP15DMB - are deprecated in ARMv8 (and ARMv7). It is
+	  strongly recommended to use the ISB, DSB, and DMB
+	  instructions instead.
+
+	  Say Y here to enable software emulation of these
+	  instructions for AArch32 userspace code. When this option is
+	  enabled, CP15 barrier usage is traced which can help
+	  identify software that needs updating.
+
+	  If unsure, say Y
+
+config SETEND_EMULATION
+	bool "Emulate SETEND instruction"
+	help
+	  The SETEND instruction alters the data-endianness of the
+	  AArch32 EL0, and is deprecated in ARMv8.
+
+	  Say Y here to enable software emulation of the instruction
+	  for AArch32 userspace code.
+
+	  Note: All the cpus on the system must have mixed endian support at EL0
+	  for this feature to be enabled. If a new CPU - which doesn't support mixed
+	  endian - is hotplugged in after this feature has been enabled, there could
+	  be unexpected results in the applications.
+
+	  If unsure, say Y
+
+endif
 
 endmenu
 
@@ -627,6 +864,26 @@ config CMDLINE_FORCE
 	  command-line options your boot loader passes to the kernel.
 endchoice
 
+config EFI_STUB
+	bool
+
+config EFI
+	bool "UEFI runtime support"
+	depends on OF && !CPU_BIG_ENDIAN
+	select LIBFDT
+	select UCS2_STRING
+	select EFI_PARAMS_FROM_FDT
+	select EFI_RUNTIME_WRAPPERS
+	select EFI_STUB
+	select EFI_ARMSTUB
+	default y
+	help
+	  This option provides support for runtime services provided
+	  by UEFI firmware (such as non-volatile variables, realtime
+	  clock, and platform reset). A UEFI stub is also provided to
+	  allow the kernel to be booted as an EFI application. This
+	  is only useful on systems that have UEFI firmware.
+
 config BUILD_ARM64_APPENDED_DTB_IMAGE
 	bool "Build a concatenated Image.gz/dtb by default"
 	depends on OF
@@ -641,14 +898,6 @@ config BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES
 	help
 	  Space separated list of names of dtbs to append when
 	  building a concatenated Image.gz-dtb.
-
-endmenu
-
-menu "CPU Power Management"
-
-if ARCH_HAS_CPUFREQ
-source "drivers/cpufreq/Kconfig"
-endif
 
 endmenu
 
@@ -682,18 +931,18 @@ menu "Power management options"
 source "kernel/power/Kconfig"
 
 config ARCH_SUSPEND_POSSIBLE
-       depends on !ARCH_S5PC100
-       depends on CPU_ARM920T || CPU_ARM926T || CPU_FEROCEON || CPU_SA1100 || \
-               CPU_V6 || CPU_V6K || CPU_V7 || CPU_XSC3 || CPU_XSCALE || CPU_MOHAWK || ARM64
-       def_bool y
+	def_bool y
 
 config ARM64_CPU_SUSPEND
-       def_bool PM_SLEEP
+	def_bool PM_SLEEP
 
-config ARCH_HIBERNATION_POSSIBLE
-        bool
-        depends on MMU
-        default y if ARCH_SUSPEND_POSSIBLE
+endmenu
+
+menu "CPU Power Management"
+
+source "drivers/cpuidle/Kconfig"
+
+source "drivers/cpufreq/Kconfig"
 
 endmenu
 
@@ -701,7 +950,11 @@ source "net/Kconfig"
 
 source "drivers/Kconfig"
 
+source "drivers/firmware/Kconfig"
+
 source "fs/Kconfig"
+
+source "arch/arm64/kvm/Kconfig"
 
 source "arch/arm64/Kconfig.debug"
 
@@ -713,4 +966,3 @@ source "arch/arm64/crypto/Kconfig"
 endif
 
 source "lib/Kconfig"
-

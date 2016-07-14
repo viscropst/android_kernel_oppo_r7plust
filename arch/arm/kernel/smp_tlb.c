@@ -76,14 +76,14 @@ bool (*erratum_a15_798181_handler)(void);
 static bool erratum_a15_798181_partial(void)
 {
 	asm("mcr p15, 0, %0, c8, c3, 1" : : "r" (0));
-	dsb();
+	dsb(ish);
 	return false;
 }
 
 static bool erratum_a15_798181_broadcast(void)
 {
 	asm("mcr p15, 0, %0, c8, c3, 1" : : "r" (0));
-	dsb();
+	dsb(ish);
 	return true;
 }
 
@@ -92,18 +92,19 @@ void erratum_a15_798181_init(void)
 	unsigned int midr = read_cpuid_id();
 	unsigned int revidr = read_cpuid(CPUID_REVIDR);
 
-	if (erratum_a15_798181_handler == erratum_a15_798181_broadcast)
-		return;
-
-	/* Cortex-A15 r0p0..r3p2 w/o ECO fix affected */
-	if ((midr & 0xff0ffff0) != 0x410fc0f0 || midr > 0x413fc0f2 ||
-	    (revidr & 0x210) == 0x210) {
-		return;
-	}
-	if (revidr & 0x10)
-		erratum_a15_798181_handler = erratum_a15_798181_partial;
-	else
+	/* Brahma-B15 r0p0..r0p2 affected
+	 * Cortex-A15 r0p0..r3p2 w/o ECO fix affected */
+	if ((midr & 0xff0ffff0) == 0x420f00f0 && midr <= 0x420f00f2)
 		erratum_a15_798181_handler = erratum_a15_798181_broadcast;
+	else if ((midr & 0xff0ffff0) == 0x410fc0f0 && midr <= 0x413fc0f2 &&
+		 (revidr & 0x210) != 0x210) {
+		if (revidr & 0x10)
+			erratum_a15_798181_handler =
+				erratum_a15_798181_partial;
+		else
+			erratum_a15_798181_handler =
+				erratum_a15_798181_broadcast;
+	}
 }
 #endif
 
@@ -139,7 +140,7 @@ void flush_tlb_all(void)
 	if (tlb_ops_need_broadcast())
 		on_each_cpu(ipi_flush_tlb_all, NULL, 1);
 	else
-		local_flush_tlb_all();
+		__flush_tlb_all();
 	broadcast_tlb_a15_erratum();
 }
 
@@ -148,7 +149,7 @@ void flush_tlb_mm(struct mm_struct *mm)
 	if (tlb_ops_need_broadcast())
 		on_each_cpu_mask(mm_cpumask(mm), ipi_flush_tlb_mm, mm, 1);
 	else
-		local_flush_tlb_mm(mm);
+		__flush_tlb_mm(mm);
 	broadcast_tlb_mm_a15_erratum(mm);
 }
 
@@ -161,7 +162,7 @@ void flush_tlb_page(struct vm_area_struct *vma, unsigned long uaddr)
 		on_each_cpu_mask(mm_cpumask(vma->vm_mm), ipi_flush_tlb_page,
 					&ta, 1);
 	} else
-		local_flush_tlb_page(vma, uaddr);
+		__flush_tlb_page(vma, uaddr);
 	broadcast_tlb_mm_a15_erratum(vma->vm_mm);
 }
 
@@ -172,7 +173,7 @@ void flush_tlb_kernel_page(unsigned long kaddr)
 		ta.ta_start = kaddr;
 		on_each_cpu(ipi_flush_tlb_kernel_page, &ta, 1);
 	} else
-		local_flush_tlb_kernel_page(kaddr);
+		__flush_tlb_kernel_page(kaddr);
 	broadcast_tlb_a15_erratum();
 }
 
@@ -208,5 +209,5 @@ void flush_bp_all(void)
 	if (tlb_ops_need_broadcast())
 		on_each_cpu(ipi_flush_bp_all, NULL, 1);
 	else
-		local_flush_bp_all();
+		__flush_bp_all();
 }
