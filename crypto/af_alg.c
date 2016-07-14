@@ -436,7 +436,7 @@ int af_alg_wait_for_completion(int err, struct af_alg_completion *completion)
 	case -EINPROGRESS:
 	case -EBUSY:
 		wait_for_completion(&completion->completion);
-		INIT_COMPLETION(completion->completion);
+		reinit_completion(&completion->completion);
 		err = completion->err;
 		break;
 	};
@@ -448,6 +448,9 @@ EXPORT_SYMBOL_GPL(af_alg_wait_for_completion);
 void af_alg_complete(struct crypto_async_request *req, int err)
 {
 	struct af_alg_completion *completion = req->data;
+
+	if (err == -EINPROGRESS)
+		return;
 
 	completion->err = err;
 	complete(&completion->completion);

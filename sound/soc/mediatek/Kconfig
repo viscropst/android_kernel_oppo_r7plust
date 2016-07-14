@@ -1,25 +1,10 @@
-config MT_SND_SOC_V1
-	bool "MT_SND_SOC_V1"
-    default n
+config SND_SOC_MT8173
+    tristate
+
+config SND_SOC_MT8173_MT6391_MACH
+    tristate "ASoC Audio driver for MT8173 with MT6391 codec"
+    depends on ARCH_MT8173
+    select SND_SOC_MT8173
+    select SND_SOC_MT6391
     help
-        If you say Y, enable MT_SND_SOC_V1_driver.
-config MT_SND_SOC_V2
-    bool "MT_SND_SOC_V2"
-	default n
-	help
-        If you say Y, enable MT_SND_SOC_V2_driver.
-config MT_SND_SOC_V3
-    bool "MT_SND_SOC_V3"
-	default n
-	help
-        If you say Y, enable MT_SND_SOC_V3_driver.				
-config MTK_SPEAKER
-	bool "MTK_SPEAKER"
-	default n
-	help
-	  If you say Y, enable MTK_SPEAKER_AMP
-config MTK_NXP_TFA9890
-    bool "MTK_NXP_TFA9890"
-	default n
-	help
-        If you say Y, enable MTK_NXP_TFA9890 driver.
+        This adds audio driver for MT8173 platform with the MT6391 audio codec.
